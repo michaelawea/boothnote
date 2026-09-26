@@ -704,7 +704,7 @@ describe('确认与附件也只认自己的（D76①）', () => {
       { clientId: randomUUID(), text: '带附件', createdAt: Date.now() },
       [['file', new Blob(['hello'], { type: 'text/plain' }), 'note.txt']],
     );
-    assert.equal(his.json.attachments, 1);
+    assert.equal(his.json.attachments.length, 1);
     const [att] = await sql<Array<{ id: string }>>`
       select id from attachment where inbox_id = ${his.json.inboxId}`;
     assert.ok(att, '附件没落库，后面两条断言就没有意义了');
@@ -970,11 +970,51 @@ describe('附件', () => {
       ],
     );
     assert.equal(r.status, 201);
-    assert.equal(r.json.attachments, 2);
+    // 清单不是数量（issue #53）：客户端传成功就丢原件，之后全靠这份引用显示 📎 和缩略图
+    assert.equal(r.json.attachments.length, 2);
+    assert.deepEqual(
+      r.json.attachments.map((a: any) => [a.kind, a.name, a.bytes, typeof a.id, typeof a.mime]),
+      [['photo', 'stand.jpg', 9, 'string', 'string'], ['file', 'spec.csv', 21, 'string', 'string']],
+    );
 
-    const rows = await sql<Array<{ kind: string; filename: string }>>`
-      select kind, filename from attachment where inbox_id = ${r.json.inboxId} order by kind`;
+    const rows = await sql<Array<{ id: string; kind: string; filename: string }>>`
+      select id, kind, filename from attachment where inbox_id = ${r.json.inboxId} order by kind`;
     assert.deepEqual(rows.map((x) => x.kind), ['file', 'photo']);
+    // 回包里的 id 就是库里的 id —— GET /attachments/:id/file 靠它取原件
+    assert.deepEqual(
+      r.json.attachments.map((a: any) => a.id).sort(),
+      rows.map((x) => x.id).sort(),
+    );
+  });
+
+  it('🔴 GET /inbox 带附件清单（不是数量）—— 换台手机登录才看得到图（issue #53）', async () => {
+    const { token } = await loginAs(ADMIN);
+    const clientId = randomUUID();
+    const r = await post(token, { clientId, text: '带图', createdAt: Date.now() }, [
+      ['photo', new Blob(['jpegjpeg'], { type: 'image/jpeg' }), 'booth.jpg'],
+    ]);
+    assert.equal(r.status, 201);
+    const list = await req('/inbox?limit=500', { headers: auth(token) });
+    const it = list.json.items.find((x: any) => x.client_id === clientId);
+    assert.ok(it, 'GET /inbox 里没有刚传的那条');
+    assert.deepEqual(
+      it.attachments.map((a: any) => [a.kind, a.name, a.mime, a.bytes]),
+      [['photo', 'booth.jpg', 'image/jpeg', 8]],
+    );
+    assert.equal(it.attachments[0].id, r.json.attachments[0].id);
+  });
+
+  it('🔴 幂等重传的回包也带清单 —— 第一次可能超时了而服务端其实收下了', async () => {
+    const { token } = await loginAs(ADMIN);
+    const clientId = randomUUID();
+    const first = await post(token, { clientId, text: '重传', createdAt: Date.now() }, [
+      ['image', new Blob(['png'], { type: 'image/png' }), 'a.png'],
+    ]);
+    // 第二次**不带文件**（客户端以为第一次没成，但原件可能已经删了）—— 回包仍要指向那张图
+    const again = await post(token, { clientId, text: '重传', createdAt: Date.now() });
+    assert.equal(again.status, 200);
+    assert.equal(again.json.duplicate, true);
+    assert.deepEqual(again.json.attachments, first.json.attachments);
   });
 
   it('🔴 附件原件也是只增不改（和原文同一条纪律）', async () => {
@@ -993,7 +1033,7 @@ describe('附件', () => {
       ['whatever', new Blob(['?']), 'x.bin'],
     ]);
     assert.equal(r.status, 201);
-    assert.equal(r.json.attachments, 0);
+    assert.deepEqual(r.json.attachments, []);
   });
 });
 

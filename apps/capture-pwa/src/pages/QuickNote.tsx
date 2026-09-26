@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 
 import { T, fmtAgo, fmtDuration } from '../theme';
 import { db, myNotes, type LocalAttachment, type Note } from '../db';
-import { ACCEPT, KIND_LABEL, addFiles, humanSize } from '../attach';
+import { ACCEPT, addFiles, attachmentCount } from '../attach';
+import { readForUpload } from '../image';
+import { AttachmentList } from '../components/Attachments';
 import { flush, uploadProgress } from '../sync';
 import { useSyncTick } from '../useSync';
 import { ProgressRing } from '../components/ProgressRing';
@@ -24,7 +26,6 @@ import {
   IconNoteMic,
   IconNoteNew,
   IconStop,
-  IconTrash,
 } from '../icons';
 import { NoteDetail } from './NoteDetail';
 import { t } from '../i18n';
@@ -45,6 +46,8 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
   const [text, setText] = useState('');
   const [atts, setAtts] = useState<LocalAttachment[]>([]);
   const [attErr, setAttErr] = useState('');
+  /** 正在读字节 / 压图（几百毫秒到两三秒）—— 这段时间不能让人以为点了没反应 */
+  const [attBusy, setAttBusy] = useState(false);
   const [notes, setNotes] = useState<Note[]>([]);
 
   const [rec, setRec] = useState<RecordingHandle | null>(null);
@@ -173,15 +176,27 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
     el.click();
   };
 
-  const onFiles = (list: FileList | null) => {
+  /**
+   * 选好文件之后：**先读成字节、图片顺手压小**，再进列表（D132 · issue #53）。
+   * 🔴 `readForUpload` 必须在 change 事件里马上调 —— iOS 给的 `File` 句柄过一会儿就死了，
+   *    存句柄进 IndexedDB 就是这次「HTTP 400」的来源。
+   */
+  const onFiles = async (list: FileList | null) => {
     if (!list?.length) return;
-    const r = addFiles(
-      atts,
-      [...list].map((f) => ({ name: f.name, type: f.type, size: f.size, blob: f })),
-      pendingKind.current,
-    );
-    setAtts(r.attachments);
-    setAttErr(r.ok ? '' : r.reason);
+    const kind = pendingKind.current;
+    setAttBusy(true);
+    try {
+      const prepared = await Promise.all([...list].map((f) => readForUpload(f, kind)));
+      setAtts((cur) => {
+        const r = addFiles(cur, prepared, kind);
+        setAttErr(r.ok ? '' : r.reason);
+        return r.attachments;
+      });
+    } catch (e) {
+      setAttErr(t('读取附件失败：{a}', { a: (e as Error).message }));
+    } finally {
+      setAttBusy(false);
+    }
   };
 
   /**
@@ -346,40 +361,15 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
         type="file"
         multiple
         style={{ display: 'none' }}
-        onChange={(e) => onFiles(e.target.files)}
+        onChange={(e) => void onFiles(e.target.files)}
       />
 
+      {attBusy && (
+        <div style={{ color: T.textLight, fontSize: 12.5, marginBottom: 10 }}>{t('正在处理图片…')}</div>
+      )}
       {atts.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 10 }}>
-          {atts.map((a, i) => (
-            <div
-              key={`${a.name}-${i}`}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 9,
-                padding: '9px 12px',
-                background: T.s2,
-                borderRadius: 12,
-                fontSize: 13,
-              }}
-            >
-              <span style={{ color: T.textLight }}>{KIND_LABEL[a.kind]}</span>
-              <span
-                style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
-              >
-                {a.name}
-              </span>
-              <span style={{ color: T.textLight, fontSize: 11.5 }}>{humanSize(a.size)}</span>
-              <button
-                onClick={() => setAtts(atts.filter((_, j) => j !== i))}
-                style={{ color: T.textLight, display: 'flex' }}
-                aria-label={t('移除')}
-              >
-                <IconTrash size={15} />
-              </button>
-            </div>
-          ))}
+        <div style={{ marginBottom: 10 }}>
+          <AttachmentList local={atts} onRemove={(i) => setAtts(atts.filter((_, j) => j !== i))} />
         </div>
       )}
       {attErr && <div style={{ color: T.amber, fontSize: 12.5, marginBottom: 12 }}>{attErr}</div>}
@@ -477,7 +467,7 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
                 >
                   <span>{fmtAgo(n.createdAt)}</span>
                   {n.companyName && <span>· {n.companyName}</span>}
-                  {Boolean(n.attachments?.length) && <span>· 📎{n.attachments!.length}</span>}
+                  {attachmentCount(n) > 0 && <span>· 📎{attachmentCount(n)}</span>}
                   {/**
                    * 🔴 处理失败要在列表上就看得见（D87 · issue #21②）。
                    * 藏进详情页的话，一条转写失败的语音和一条正常的长得一模一样 ——

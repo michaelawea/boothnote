@@ -27,7 +27,7 @@ const UMLAUT: Record<string, string> = { ä: 'ae', ö: 'oe', ü: 'ue', ß: 'ss' 
  *
  * 按词去就两头都对：`Orba Mobil` → `orba`、`VANTAmobil` → `vantamobil`（它本来就是一个词）。
  * 实测对着真实的 56 家名单跑，误命中从 3 组降到 0 组，而集团/品牌的父子对
- * （Alpin Tannhof ↔ Alpin、Erwin Havel Group ↔ Havel）照样命中 —— 那些**本来就该命中**。
+ * （Alpin Tannhof ↔ Alpin、Havel Mobil Group ↔ Havel）照样命中 —— 那些**本来就该命中**。
  */
 const NOISE = new Set([
   // 法律后缀

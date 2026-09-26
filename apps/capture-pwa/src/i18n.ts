@@ -289,6 +289,12 @@ const EN: Record<string, string> = {
   "正在转写…": "Transcribing…",
   "没有编号 —— 入库前补一个": "No code yet — add one before committing",
   "没读开": "could not be read",
+  "模型已看图": "seen by the model",
+  // ── 附件缩略图（issue #53）──
+  "取不到图片": "Image unavailable",
+  "看大图": "View full size",
+  "正在处理图片…": "Processing image…",
+  "读取附件失败：{a}": "Could not read attachment: {a}",
   "测试软件": "Test software",
   "浏览器没有 MediaRecorder": "This browser has no MediaRecorder",
   "点「允许」。": "tap “Allow”.",

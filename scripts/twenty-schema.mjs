@@ -198,7 +198,7 @@ export const FIELDS = {
   // ── 段1：公司 + 车辆信息（内置 company 上加列）────────────────────
   company: [
     { name: 'accountCode', label: 'Account Code 账户代号', type: 'TEXT', icon: 'IconHash', isUnique: true,
-      description: 'D30：人类可读的稳定代号（如 EHG-HAVEL）。关联一律用 UUID，这一列给人看、给 Excel 对账、给 Agent 匹配品牌名。' },
+      description: 'D30：人类可读的稳定代号（如 HMG-HAVEL）。关联一律用 UUID，这一列给人看、给 Excel 对账、给 Agent 匹配品牌名。' },
     { name: 'accountType', label: 'Account Type 账户类型', type: 'SELECT', icon: 'IconCategory', options: ACCOUNT_TYPES },
     { ...rel('company', '下级公司', 'IconSitemap'), name: 'parentCompany', label: 'Parent Company 上级公司', icon: 'IconSitemap',
       description: 'D19：29 集团 / 51 子集团 / 61 品牌本质是一棵被压平的树，用自引用装下（约 141 条记录）。\n' +

@@ -51,7 +51,7 @@ export type CodedRow = {
 };
 
 export type CodeAsk = {
-  /** 客户代号（`accountCode`，如 EHG-HAVEL）。**没有就不发号** —— 前缀就是它。 */
+  /** 客户代号（`accountCode`，如 HMG-HAVEL）。**没有就不发号** —— 前缀就是它。 */
   companyCode: string | null | undefined;
   /** 品类。D56 的项目身份的另一半。 */
   category?: string | null;
@@ -65,13 +65,13 @@ export type CodeAsk = {
 
 const NORM = (s: unknown) => String(s ?? '').trim().toUpperCase().replace(/[\s-]+/g, '');
 
-/** `EHG-HAVEL` + 2026 → `EHG-HAVEL-2026`。编号里只留 `[A-Z0-9-]`。 */
+/** `HMG-HAVEL` + 2026 → `HMG-HAVEL-2026`。编号里只留 `[A-Z0-9-]`。 */
 export const codeBase = (companyCode: string, year: number): string =>
   `${String(companyCode).toUpperCase().replace(/[^A-Z0-9-]/g, '')}-${year}`
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '');
 
-/** `EHG-HAVEL-2026-007` → 7。不是这个 base 下的编号 → null。**纯函数。** */
+/** `HMG-HAVEL-2026-007` → 7。不是这个 base 下的编号 → null。**纯函数。** */
 export const seqOf = (base: string, code: string | null | undefined): number | null => {
   const c = String(code ?? '').trim().toUpperCase();
   const b = base.toUpperCase();
@@ -148,7 +148,7 @@ export const pickCode = (
 ): { code: string; reused: boolean } => {
   /**
    * 只看这家客户的编号。
-   * ⚠️ 比前缀时**带上那个短横线**：不带的话代号 `EHG` 会把 `EHG-HAVEL-…` 也算进来，
+   * ⚠️ 比前缀时**带上那个短横线**：不带的话代号 `HMG` 会把 `HMG-HAVEL-…` 也算进来，
    * 于是两家客户共用一条序号，早晚撞号。
    */
   const head = `${ask.companyCode.toUpperCase()}-`;

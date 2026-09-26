@@ -57,6 +57,20 @@ export const shouldUpload = (
 /** 单次上传的超时。没有它，一次挂住的请求会把整个队列永远堵死。 */
 export const UPLOAD_TIMEOUT_MS = 90_000;
 
+/** 超时上限。再长就不是「慢」而是「挂了」，该让它失败、让人看到。 */
+export const UPLOAD_TIMEOUT_MAX_MS = 600_000;
+
+/**
+ * 按体积放大的超时（issue #53 B1）。
+ *
+ * 90 秒对一句话够用，对一张 iPhone 原图不够：展馆里 4G 上行几十 KB/s 是常态，
+ * 5 MB 在 60 KB/s 以下**必然**超时，然后从零重传、再超时，8 次之后停下 ——
+ * 这 4 分钟里没有一个字节被服务端收下。按 20 KB/s 的下限给每个字节留时间，
+ * 封顶 10 分钟。图片进来先压过（`image.ts`），所以正常情况下加的那一段很短。
+ */
+export const uploadTimeoutFor = (bytes: number): number =>
+  Math.min(UPLOAD_TIMEOUT_MAX_MS, UPLOAD_TIMEOUT_MS + Math.ceil(Math.max(0, bytes) / 20_000) * 1000);
+
 /** 给人看的一句话。**不要只显示「失败」** —— 那等于什么都没说。 */
 export const syncLabel = (n: Pick<Note, 'sync' | 'attempts' | 'lastError'>): string => {
   if (n.sync === 'synced') return '';

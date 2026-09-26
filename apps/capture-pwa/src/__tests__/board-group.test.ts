@@ -13,7 +13,7 @@ import type { Company, RecordRow } from '../db';
  */
 
 const companies: Company[] = [
-  { id: 'u-havel', code: 'EHG-HAVEL', name: 'Havel' },
+  { id: 'u-havel', code: 'HMG-HAVEL', name: 'Havel' },
   { id: 'u-alpin', code: 'KNA', name: 'Alpin Tannhof' },
 ] as unknown as Company[];
 
@@ -57,9 +57,9 @@ const proj = (o: {
   rec({
     at: o.at,
     status: o.status ?? 'ready',
-    company_code: o.company ?? 'EHG-HAVEL',
+    company_code: o.company ?? 'HMG-HAVEL',
     extracted: {
-      companyCode: o.company ?? 'EHG-HAVEL',
+      companyCode: o.company ?? 'HMG-HAVEL',
       category: o.category ?? 'BATTERY',
       project: { projectCode: o.code ?? null, name: o.name ?? 'CI-Bus 电池项目' },
     },
@@ -69,10 +69,10 @@ describe('projectCodeOf —— 编号从哪读', () => {
   it('人改的 > agent 提的', () => {
     const r = rec({
       at: '2026-08-07T09:00:00Z',
-      extracted: { project: { projectCode: 'EHG-HAVEL-2026-001' } },
-      confirmed_fields: { projectCode: 'EHG-HAVEL-2026-009' },
+      extracted: { project: { projectCode: 'HMG-HAVEL-2026-001' } },
+      confirmed_fields: { projectCode: 'HMG-HAVEL-2026-009' },
     });
-    expect(projectCodeOf(r)).toBe('EHG-HAVEL-2026-009');
+    expect(projectCodeOf(r)).toBe('HMG-HAVEL-2026-009');
   });
 
   it('🔴 D91 之前入库的老记录靠回执认出来 —— 它的 extracted 里没有编号', () => {
@@ -80,14 +80,14 @@ describe('projectCodeOf —— 编号从哪读', () => {
       at: '2026-08-01T09:00:00Z',
       status: 'confirmed',
       extracted: { project: { name: 'CI-Bus 电池项目' } },
-      twenty_refs: { projectCodeGenerated: 'EHG-HAVEL-2026-001' },
+      twenty_refs: { projectCodeGenerated: 'HMG-HAVEL-2026-001' },
     });
-    expect(projectCodeOf(r)).toBe('EHG-HAVEL-2026-001');
+    expect(projectCodeOf(r)).toBe('HMG-HAVEL-2026-001');
   });
 
   it('大小写不算数 —— CRM 里 abc-001 和 ABC-001 是同一个项目', () => {
-    expect(projectCodeOf(rec({ at: 'x', extracted: { projectCode: 'ehg-havel-2026-001' } }))).toBe(
-      'EHG-HAVEL-2026-001',
+    expect(projectCodeOf(rec({ at: 'x', extracted: { projectCode: 'hmg-havel-2026-001' } }))).toBe(
+      'HMG-HAVEL-2026-001',
     );
   });
 
@@ -99,7 +99,7 @@ describe('projectCodeOf —— 编号从哪读', () => {
 
 describe('identityOf —— D56 的项目身份', () => {
   it('客户代号 + 品类', () => {
-    expect(identityOf(proj({ at: 'x' }), companies)).toBe('EHG-HAVEL|BATTERY');
+    expect(identityOf(proj({ at: 'x' }), companies)).toBe('HMG-HAVEL|BATTERY');
   });
 
   it('缺一个就定不了 —— 不猜', () => {
@@ -113,27 +113,27 @@ describe('buildGroups —— 按项目', () => {
 
   it('🔴 同一个编号的两条对话只占一张卡（issue #18 的验收第一条）', () => {
     const rows = [
-      proj({ at: '2026-08-07T15:00:00Z', code: 'EHG-HAVEL-2026-001', name: 'CI-Bus 时间线补充' }),
-      proj({ at: '2026-08-07T09:00:00Z', code: 'EHG-HAVEL-2026-001', name: 'CI-Bus 电池项目' }),
+      proj({ at: '2026-08-07T15:00:00Z', code: 'HMG-HAVEL-2026-001', name: 'CI-Bus 时间线补充' }),
+      proj({ at: '2026-08-07T09:00:00Z', code: 'HMG-HAVEL-2026-001', name: 'CI-Bus 电池项目' }),
     ];
     const out = g(rows);
     expect(out).toHaveLength(1);
-    expect(out[0]!.projectCode).toBe('EHG-HAVEL-2026-001');
+    expect(out[0]!.projectCode).toBe('HMG-HAVEL-2026-001');
     expect(out[0]!.rows).toHaveLength(2);
   });
 
   it('🔴 名字一模一样但编号不同 → 两张卡。**键是编号不是名字**', () => {
     const rows = [
       proj({ at: '2026-08-07T15:00:00Z', code: 'KNA-2026-001', name: '电池项目', company: 'KNA' }),
-      proj({ at: '2026-08-07T09:00:00Z', code: 'EHG-HAVEL-2026-001', name: '电池项目' }),
+      proj({ at: '2026-08-07T09:00:00Z', code: 'HMG-HAVEL-2026-001', name: '电池项目' }),
     ];
-    expect(g(rows).map((x) => x.projectCode).sort()).toEqual(['EHG-HAVEL-2026-001', 'KNA-2026-001']);
+    expect(g(rows).map((x) => x.projectCode).sort()).toEqual(['HMG-HAVEL-2026-001', 'KNA-2026-001']);
   });
 
   it('🔴 编号一样但名字不同 → 一张卡（「Istra 电池项目」和「Istra 锂电项目」是同一个）', () => {
     const rows = [
-      proj({ at: '2026-08-07T15:00:00Z', code: 'EHG-HAVEL-2026-001', name: 'Havel 锂电项目' }),
-      proj({ at: '2026-08-07T09:00:00Z', code: 'EHG-HAVEL-2026-001', name: 'Havel 电池项目' }),
+      proj({ at: '2026-08-07T15:00:00Z', code: 'HMG-HAVEL-2026-001', name: 'Havel 锂电项目' }),
+      proj({ at: '2026-08-07T09:00:00Z', code: 'HMG-HAVEL-2026-001', name: 'Havel 电池项目' }),
     ];
     const out = g(rows);
     expect(out).toHaveLength(1);
@@ -142,17 +142,17 @@ describe('buildGroups —— 按项目', () => {
 
   it('同一个 D56 身份下有人拿到了编号 → 没编号的那几条也进同一张卡', () => {
     const rows = [
-      proj({ at: '2026-08-07T15:00:00Z', code: 'EHG-HAVEL-2026-001' }),
+      proj({ at: '2026-08-07T15:00:00Z', code: 'HMG-HAVEL-2026-001' }),
       // 同一家客户、同一个品类，但这条压根没走 propose_project
       rec({
         at: '2026-08-07T09:00:00Z',
-        company_code: 'EHG-HAVEL',
-        extracted: { companyCode: 'EHG-HAVEL', category: 'BATTERY' },
+        company_code: 'HMG-HAVEL',
+        extracted: { companyCode: 'HMG-HAVEL', category: 'BATTERY' },
       }),
     ];
     const out = g(rows);
     expect(out).toHaveLength(1);
-    expect(out[0]!.projectCode).toBe('EHG-HAVEL-2026-001');
+    expect(out[0]!.projectCode).toBe('HMG-HAVEL-2026-001');
     expect(out[0]!.rows).toHaveLength(2);
   });
 
@@ -165,32 +165,32 @@ describe('buildGroups —— 按项目', () => {
       }),
       rec({
         at: '2026-08-07T09:00:00Z',
-        company_code: 'EHG-HAVEL',
-        extracted: { companyCode: 'EHG-HAVEL', category: 'BATTERY' },
+        company_code: 'HMG-HAVEL',
+        extracted: { companyCode: 'HMG-HAVEL', category: 'BATTERY' },
       }),
     ];
     const out = g(rows);
     expect(out).toHaveLength(2);
     expect(out.every((x) => x.projectCode === null)).toBe(true);
-    expect(out.map((x) => x.key)).toEqual(['p:KNA|INVERTER', 'p:EHG-HAVEL|BATTERY']);
+    expect(out.map((x) => x.key)).toEqual(['p:KNA|INVERTER', 'p:HMG-HAVEL|BATTERY']);
   });
 
   it('客户或品类缺一个 → 「未归入项目」，而且永远沉底', () => {
     const rows = [
       rec({ at: '2026-08-05T09:00:00Z' }), // 什么都没有 —— 最老的一条
-      proj({ at: '2026-08-07T09:00:00Z', code: 'EHG-HAVEL-2026-001' }),
+      proj({ at: '2026-08-07T09:00:00Z', code: 'HMG-HAVEL-2026-001' }),
     ];
     const out = g(rows);
-    expect(out.map((x) => x.key)).toEqual(['p:#EHG-HAVEL-2026-001', 'p:~none']);
+    expect(out.map((x) => x.key)).toEqual(['p:#HMG-HAVEL-2026-001', 'p:~none']);
   });
 
   it('组的先后按各自最新那条排', () => {
     const rows = [
       proj({ at: '2026-08-07T15:00:00Z', code: 'KNA-2026-001', company: 'KNA' }),
-      proj({ at: '2026-08-07T12:00:00Z', code: 'EHG-HAVEL-2026-001' }),
+      proj({ at: '2026-08-07T12:00:00Z', code: 'HMG-HAVEL-2026-001' }),
       proj({ at: '2026-08-06T08:00:00Z', code: 'KNA-2026-001', company: 'KNA' }),
     ];
-    expect(g(rows).map((x) => x.projectCode)).toEqual(['KNA-2026-001', 'EHG-HAVEL-2026-001']);
+    expect(g(rows).map((x) => x.projectCode)).toEqual(['KNA-2026-001', 'HMG-HAVEL-2026-001']);
   });
 });
 
@@ -204,11 +204,11 @@ describe('buildGroups —— 另外两种分组一个字没改', () => {
 
   it('按客户还是一家一组 —— 编号不参与', () => {
     const rows = [
-      proj({ at: '2026-08-07T15:00:00Z', code: 'EHG-HAVEL-2026-001', category: 'BATTERY' }),
-      proj({ at: '2026-08-07T12:00:00Z', code: 'EHG-HAVEL-2026-002', category: 'INVERTER' }),
+      proj({ at: '2026-08-07T15:00:00Z', code: 'HMG-HAVEL-2026-001', category: 'BATTERY' }),
+      proj({ at: '2026-08-07T12:00:00Z', code: 'HMG-HAVEL-2026-002', category: 'INVERTER' }),
     ];
     const out = buildGroups(rows, 'company', companies, null);
     expect(out).toHaveLength(1);
-    expect(out[0]!.key).toBe('c:EHG-HAVEL');
+    expect(out[0]!.key).toBe('c:HMG-HAVEL');
   });
 });

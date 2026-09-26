@@ -34,18 +34,27 @@ for (const f of globSync('**/*.{ts,tsx}', { cwd: SRC })) {
   if (f.includes('__tests__') || f === 'i18n.ts') continue;
   const src = readFileSync(join(SRC, f), 'utf8');
   let depth = 0;
+  /**
+   * 正在一个**模块级的对象/数组字面量**里（`export const X = {` … `}`）。
+   * 里面的 `t()` 和 depth 0 的一样，是 import 时求值 —— `KIND_LABEL` 就是这么漏过去的
+   * （issue #53 A3：英文账号登录后 chip 上还是「拍照 / 图片 / 文件」）。
+   * 字面量里带 `=>` / `function` 的那一行是延迟求值，不算。
+   */
+  let literal = false;
   src.split('\n').forEach((line, i) => {
     const code = line.replace(/\/\/.*/, '');
     const at = `${f}:${i + 1}`;
+    if (depth === 0 && /^(export\s+)?(const|let|var)\s+\w+[^=]*=\s*[[{]\s*$/.test(code)) literal = true;
     if (/\bt(?:r)?\(\s*'/.test(code)) {
       if (DATA_PATH.test(f) && !ERRISH.test(code))
         bad.push(`① ${at}  数据路径里出现 t() —— 存进本地库的值不能随语言变\n     ${code.trim().slice(0, 90)}`);
-      if (depth === 0)
+      if (depth === 0 || (literal && !/=>|\bfunction\b/.test(code)))
         bad.push(`③ ${at}  模块级 t() —— 会在模块加载时求值，拿到的是旧语言\n     ${code.trim().slice(0, 90)}`);
     }
     if (/(===|!==)\s*t(?:r)?\(|t(?:r)?\('[^']*'\)\s*(===|!==)/.test(code))
       bad.push(`② ${at}  拿译文做比较 —— 判据不能随语言变\n     ${code.trim().slice(0, 90)}`);
     depth += (code.match(/[{(]/g) ?? []).length - (code.match(/[})]/g) ?? []).length;
+    if (depth <= 0) literal = false;
   });
 }
 

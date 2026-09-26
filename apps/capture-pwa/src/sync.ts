@@ -1,8 +1,9 @@
-import { db, type Note } from './db';
+import { db, type Note, type RemoteAttachment } from './db';
 import { authFetch, authUpload, getSession, onAuthChange, AuthError } from './auth';
 import { saveNoteText } from './api';
 import { MOCK_UPLOAD } from './config';
-import { UPLOAD_TIMEOUT_MS, shouldUpload } from './retry';
+import { shouldUpload, uploadTimeoutFor } from './retry';
+import { attachmentBlob } from './attach';
 import { t } from './i18n';
 
 /**
@@ -39,7 +40,24 @@ export const anyUploading = () => progress.size > 0;
 
 let running = false;
 
-const upload = async (note: Note): Promise<{ inboxId: string; threadId?: string; stagingId?: string }> => {
+/** 服务端回包里的附件清单 → 本地形状。回包里不是数组（老网关只回数量）就当没有。 */
+const toRemote = (raw: unknown): RemoteAttachment[] | undefined => {
+  if (!Array.isArray(raw)) return undefined;
+  const list = raw
+    .filter((a): a is Record<string, any> => Boolean(a && typeof a === 'object' && a.id))
+    .map((a) => ({
+      id: String(a.id),
+      kind: (a.kind === 'photo' || a.kind === 'image' ? a.kind : 'file') as RemoteAttachment['kind'],
+      name: String(a.name ?? a.filename ?? ''),
+      mime: String(a.mime ?? 'application/octet-stream'),
+      size: Number(a.bytes ?? a.size ?? 0),
+    }));
+  return list.length ? list : undefined;
+};
+
+const upload = async (
+  note: Note,
+): Promise<{ inboxId: string; threadId?: string; stagingId?: string; attachments?: RemoteAttachment[] }> => {
   // 只在显式开启时走模拟上传（VITE_MOCK_UPLOAD=1），用于纯调 UI。
   // ⚠️ 绝不能靠「某个环境变量忘了设」进入这个分支 —— 那会让上传失败看起来像成功。
   if (MOCK_UPLOAD) {
@@ -81,7 +99,12 @@ const upload = async (note: Note): Promise<{ inboxId: string; threadId?: string;
   if (note.audioBlob) form.append('audio', note.audioBlob, `${note.id}.${ext(note.audioMime)}`);
   // 附件的 fieldname 就是它的类型（photo / image / file）——
   // 自描述，不依赖数组顺序对齐，少一类「顺序错位」的 bug
-  for (const a of note.attachments ?? []) form.append(a.kind, a.blob, a.name);
+  for (const a of note.attachments ?? []) {
+    const b = attachmentBlob(a);
+    if (b) form.append(a.kind, b, a.name);
+  }
+  // 超时按体积放大（issue #53 B1）—— 一张原图在展馆 4G 上 90 秒传不完是常态，不是故障
+  const bytes = (note.audioBlob?.size ?? 0) + (note.attachments ?? []).reduce((s, a) => s + a.size, 0);
 
   /**
    * 走 XHR 不走 fetch —— **只有它有上传进度**（见 auth.ts 的 authUpload）。
@@ -89,15 +112,25 @@ const upload = async (note: Note): Promise<{ inboxId: string; threadId?: string;
    * **整个队列从此不动**，而界面上什么都看不出来。展馆里 4G 上行挂住是常态。
    */
   const res = await authUpload('/inbox', form, {
-    timeoutMs: UPLOAD_TIMEOUT_MS,
+    timeoutMs: uploadTimeoutFor(bytes),
     onProgress: (loaded, total) => {
       progress.set(note.id, total > 0 ? loaded / total : -1);
       emit();
     },
   });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const json = JSON.parse(res.text) as { inboxId?: string; threadId?: string; stagingId?: string };
-  return { inboxId: json.inboxId ?? note.id, threadId: json.threadId, stagingId: json.stagingId };
+  const json = JSON.parse(res.text) as {
+    inboxId?: string;
+    threadId?: string;
+    stagingId?: string;
+    attachments?: unknown;
+  };
+  return {
+    inboxId: json.inboxId ?? note.id,
+    threadId: json.threadId,
+    stagingId: json.stagingId,
+    attachments: toRemote(json.attachments),
+  };
 };
 
 const ext = (mime?: string) =>
@@ -136,6 +169,8 @@ export const flush = async ({ manual = false } = {}): Promise<void> => {
           stagingId: r.stagingId,
           audioBlob: undefined,
           attachments: undefined,
+          // 原件丢了，引用留下 —— 否则「传成功」= 图片从界面上消失（issue #53 A1）
+          remoteAttachments: r.attachments ?? note.remoteAttachments,
           lastError: undefined,
         });
         // 传完就把进度抹掉 —— 留着的话下次界面会显示一个假的 100%
@@ -296,6 +331,7 @@ export const pullInbox = async (): Promise<number> => {
           remoteId: it.id as string,
           threadId: (it.thread_id as string) ?? undefined,
           stagingId: (it.staging_id as string) ?? undefined,
+          remoteAttachments: toRemote(it.attachments),
         });
         added++;
       } else {
@@ -334,6 +370,9 @@ export const pullInbox = async (): Promise<number> => {
           patch.editSyncedAt = Date.now();
         }
         if (!local.stagingId && it.staging_id) patch.stagingId = it.staging_id as string;
+        // 服务端有的附件清单（issue #53）。这台手机传的那条上传时就填了；补的是老记录和别的设备传的
+        const remote = toRemote(it.attachments);
+        if (remote && !local.remoteAttachments?.length) patch.remoteAttachments = remote;
         // 「发给 AI」在别的设备上点过 —— 对话 id 补回来，否则这台点一下会再开一条
         if (!local.threadId && it.thread_id) patch.threadId = it.thread_id as string;
         /**

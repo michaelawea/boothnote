@@ -18,8 +18,38 @@ export type LocalAttachment = {
   name: string;
   mime: string;
   size: number;
-  /** 原件。**上传成功之前绝不删** —— 和音频同一个道理。 */
-  blob: Blob;
+  /**
+   * 原件的字节。**上传成功之前绝不删** —— 和音频同一个道理。
+   *
+   * 🔴 **存 ArrayBuffer，不存 `File`**（D128 · issue #53）。
+   * 2026-09-02 展会现场抓包：iPhone 上传带图速记时发出去的请求 **`Content-Length: 0`**，
+   * 网关只能回 400。原因是之前把 `<input type=file>` 给的 `File` 对象原样存进 IndexedDB，
+   * iOS 上读回来的是一个指向已经不存在的临时文件的引用；WebKit 遇到读不出的 Blob
+   * 会把**整个** multipart 正文发成零字节 —— 连 JSON 那个字段一起没了。
+   * 录音一直能传，因为 MediaRecorder 给的是内存里的 Blob。
+   * 判据：**进本地库的附件必须是字节，不是句柄。** 句柄只在拿到它的那一刻有效。
+   */
+  bytes?: ArrayBuffer;
+  /**
+   * 2026-09-02 之前的形状（`File` 原样存）。只为让老记录还能被读到（`attachmentBlob`）——
+   * 新代码**不再写这一格**。
+   */
+  blob?: Blob;
+};
+
+/**
+ * 服务端已经收下的附件（`GET /inbox` / `POST /inbox` 回包里的清单）。
+ *
+ * 🔴 和 `attachments` 是两回事：那个是「还没传上去的原件」，这个是「服务端有的引用」。
+ * 以前上传成功就把 `attachments` 清空、而服务端只回一个数量 —— 于是**传成功那一刻
+ * 图片从界面上消失**（issue #53 A1）。原件走 `GET /attachments/:id/file` 取。
+ */
+export type RemoteAttachment = {
+  id: string;
+  kind: AttachmentKind;
+  name: string;
+  mime: string;
+  size: number;
 };
 
 export type Note = {
@@ -88,6 +118,8 @@ export type Note = {
   threadId?: string;
   /** 拍照 / 相册 / 文件。上传成功后清空，原件不再占手机空间。 */
   attachments?: LocalAttachment[];
+  /** 服务端收下的附件清单（issue #53）。上传成功时由回包填，换台手机由 `pullInbox()` 填。 */
+  remoteAttachments?: RemoteAttachment[];
   /** 服务端 staging 行的 id，用来做核对与确认。 */
   stagingId?: string;
   /**

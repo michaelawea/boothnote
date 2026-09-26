@@ -228,7 +228,9 @@ PWA (capture.域名)  ──只认网关，永不直连 Twenty──▶  网关 
                                    //      服务端存进 staging.transcript 并**跳过转写**。
                                    //      老版本 PWA 不发这个字段 → 照旧自己转，新旧共存
 }
-// ← 201 { "inboxId","stagingId","threadId","attachments":2,"duplicate":false }
+// ← 201 { "inboxId","stagingId","threadId","attachments":[{id,kind,name,mime,bytes}],"duplicate":false }
+//    attachments 是**清单**不是数量（issue #53）：客户端传成功就丢原件，之后靠它显示 📎 和缩略图，
+//    原件走 GET /attachments/:id/file。幂等重传（200 duplicate:true）也带。
 // ← 200 { …, "duplicate": true }   ← clientId 已存在，不重复创建
 ```
 
@@ -238,7 +240,7 @@ PWA (capture.域名)  ──只认网关，永不直连 Twenty──▶  网关 
 ### `GET /inbox?since=<iso8601>&limit=100`
 
 **跨设备同步靠它。** 返回当前用户自己的记录，按 `created_at` 升序。
-比 001 多了 `thread_id` / `staging_id` / `partial` / `attachments`（数量），
+比 001 多了 `thread_id` / `staging_id` / `partial` / `attachments`（清单 `[{id,kind,name,mime,bytes}]`，issue #53 起；之前是数量），
 007 起还带 `edited_text` / `edited_at` / `title`。
 
 ### `PATCH /inbox/:id/text` —— 改一条速记的正文（D68）

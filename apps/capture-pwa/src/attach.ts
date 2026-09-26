@@ -1,4 +1,4 @@
-import type { AttachmentKind, LocalAttachment } from './db';
+import type { AttachmentKind, LocalAttachment, Note } from './db';
 import { t } from './i18n';
 
 /**
@@ -22,11 +22,30 @@ export const ACCEPT: Record<AttachmentKind, string> = {
   file: '*/*',
 };
 
-export const KIND_LABEL: Record<AttachmentKind, string> = {
-  photo: t('拍照'),
-  image: t('图片'),
-  file: t('文件'),
+/**
+ * 类型标签。**是函数不是常量** —— 之前写成模块级对象字面量，`t()` 在 import 时就求值了，
+ * 英文账号登录之后 chip 上还是「拍照 / 图片 / 文件」直到刷新（issue #53 A3）。
+ * `check-i18n-safety.mjs` 现在会抓模块级字面量里的 `t()`。
+ */
+export const kindLabel = (kind: AttachmentKind): string => {
+  if (kind === 'photo') return t('拍照');
+  if (kind === 'image') return t('图片');
+  return t('文件');
 };
+
+export const isImageMime = (mime: string | null | undefined): boolean => /^image\//i.test(mime ?? '');
+
+/**
+ * 把一条本地附件变成能塞进 FormData 的 Blob。
+ * 新记录是字节（`bytes`），2026-09-02 之前的老记录是 `File`（`blob`）—— 后者在 iOS 上多半已经读不出了，
+ * 但还是交给浏览器试，失败会以 400 的形式回来，比静默丢掉强。
+ */
+export const attachmentBlob = (a: Pick<LocalAttachment, 'bytes' | 'blob' | 'mime'>): Blob | null =>
+  a.bytes ? new Blob([a.bytes], { type: a.mime }) : (a.blob ?? null);
+
+/** 列表 📎 要显示的数量：没传上去的原件，或者服务端已收下的清单。 */
+export const attachmentCount = (n: Pick<Note, 'attachments' | 'remoteAttachments'>): number =>
+  n.attachments?.length || n.remoteAttachments?.length || 0;
 
 export const humanSize = (bytes: number): string =>
   bytes >= 1 << 20 ? `${(bytes / (1 << 20)).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
@@ -41,7 +60,7 @@ export type AddResult =
  */
 export const addFiles = (
   current: LocalAttachment[],
-  files: Array<{ name: string; type: string; size: number; blob: Blob }>,
+  files: Array<{ name: string; type: string; size: number; bytes: ArrayBuffer }>,
   kind: AttachmentKind,
 ): AddResult => {
   const next = [...current];
@@ -61,7 +80,7 @@ export const addFiles = (
       name: f.name || `${kind}-${Date.now()}`,
       mime: f.type || 'application/octet-stream',
       size: f.size,
-      blob: f.blob,
+      bytes: f.bytes,
     });
   }
   return { ok: true, attachments: next };

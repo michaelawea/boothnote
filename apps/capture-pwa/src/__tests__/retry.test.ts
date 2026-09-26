@@ -70,3 +70,22 @@ describe('③ 状态文案要说人话', () => {
     expect(syncLabel(note({ sync: 'synced' }))).toBe('');
   });
 });
+
+// ══════════════════════════════════════════════════════════════════
+//  issue #53 B1：超时要跟着体积走
+// ══════════════════════════════════════════════════════════════════
+import { UPLOAD_TIMEOUT_MAX_MS, UPLOAD_TIMEOUT_MS, uploadTimeoutFor } from '../retry';
+
+describe('④ 超时按体积放大（issue #53 B1）', () => {
+  it('一句话还是 90 秒', () => {
+    expect(uploadTimeoutFor(0)).toBe(UPLOAD_TIMEOUT_MS);
+    expect(uploadTimeoutFor(-5)).toBe(UPLOAD_TIMEOUT_MS);
+  });
+  it('一张 4 MB 原图在 20 KB/s 上也给得够', () => {
+    const ms = uploadTimeoutFor(4 * 1024 * 1024);
+    expect(ms).toBeGreaterThanOrEqual(UPLOAD_TIMEOUT_MS + (4 * 1024 * 1024) / 20_000 * 1000);
+  });
+  it('封顶 10 分钟 —— 再长就不是慢，是挂了', () => {
+    expect(uploadTimeoutFor(500 << 20)).toBe(UPLOAD_TIMEOUT_MAX_MS);
+  });
+});

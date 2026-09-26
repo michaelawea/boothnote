@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 
 import { T, fmtAgo, fmtDuration } from '../theme';
 import { db, type Note } from '../db';
-import { KIND_LABEL, humanSize } from '../attach';
+import { attachmentCount } from '../attach';
+import { AttachmentList } from '../components/Attachments';
 import { flush } from '../sync';
 import { fetchNoteThreads, retryTranscribe, sendToAgent, type NoteThread } from '../api';
 import { syncLabel } from '../retry';
@@ -311,17 +312,12 @@ export const NoteDetail = ({
             </Block>
           )}
 
-          {note.attachments?.length ? (
+          {/* 本地原件（还没传）或服务端清单（传上去了 / 别的设备传的）—— 两种都要看得到图（issue #53） */}
+          {attachmentCount(note) > 0 && (
             <Block title={t('附件')}>
-              {note.attachments.map((a, i) => (
-                <div key={`${a.name}-${i}`} style={{ display: 'flex', gap: 8, fontSize: 12.5, padding: '3px 0' }}>
-                  <span style={{ color: T.textLight }}>{KIND_LABEL[a.kind]}</span>
-                  <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.name}</span>
-                  <span style={{ color: T.textLight }}>{humanSize(a.size)}</span>
-                </div>
-              ))}
+              <AttachmentList local={note.attachments} remote={note.remoteAttachments} />
             </Block>
-          ) : null}
+          )}
 
           {/* ── 状态（issue #27:「查看相关状态」）─────────────────────
               两层分开说，因为它们答的不是同一个问题（D87）：

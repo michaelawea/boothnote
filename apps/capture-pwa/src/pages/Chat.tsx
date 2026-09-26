@@ -17,7 +17,9 @@ import {
   type ThreadMessage,
 } from '../api';
 import { db, type LocalAttachment, type Thread } from '../db';
-import { ACCEPT, KIND_LABEL, addFiles, humanSize } from '../attach';
+import { ACCEPT, addFiles, humanSize, kindLabel } from '../attach';
+import { readForUpload } from '../image';
+import { remoteFileUrl } from '../components/Attachments';
 import { flush, uploadProgress } from '../sync';
 import { useSyncTick } from '../useSync';
 import { ProgressRing } from '../components/ProgressRing';
@@ -69,12 +71,47 @@ import { spliceAt } from '../compose';
  * 一个附件。原件在网关磁盘上 —— Twenty 这个版本没有开放文件上传接口，
  * 所以这里提供的下载链接是**唯一**能拿回原件的路径。
  */
+/** 按文件名认图片 —— 对话接口的附件没带 mime（网关只给 name/kind/bytes/parsed）。 */
+const IMAGE_NAME = /\.(jpe?g|png|webp|gif|heic|heif)$/i;
+
+/** 对话里的图：缩略图，点一下原地放大（issue #53 A2 —— 之前点 chip 是「下载」，手机上等于没反应）。 */
+const ChatImage = ({ id, name }: { id: string; name: string }) => {
+  const [src, setSrc] = useState<string | null>(null);
+  const [big, setBig] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    remoteFileUrl(id)
+      .then((u) => alive && setSrc(u))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt={name}
+      onClick={() => setBig((b) => !b)}
+      style={
+        big
+          ? { width: '100%', maxHeight: '70vh', objectFit: 'contain', borderRadius: 10, display: 'block', background: T.s3 }
+          : { width: 96, height: 96, objectFit: 'cover', borderRadius: 10, display: 'block', background: T.s3 }
+      }
+    />
+  );
+};
+
 const AttachmentChip = ({
   att,
 }: {
   att: { id: string; name: string; kind: string; bytes: number; parsed: string | null };
 }) => {
-  const read = att.parsed === 'ready';
+  /**
+   * `ready` = 解析出了文字；`native` = 图片原样喂给了模型（D71 · migration 008）。
+   * 两种都是「它看过了」。以前只认 `ready`，于是**每一张模型真看过的图都标着「没读开」**（issue #53 A2）。
+   */
+  const read = att.parsed === 'ready' || att.parsed === 'native';
   const body = (
     <>
       <IconFile size={14} />
@@ -88,11 +125,12 @@ const AttachmentChip = ({
           没有它，人分不清「传上去了」和「它看过了」。 */}
       {att.parsed && (
         <span style={{ fontSize: 11, color: read ? T.green : T.amber, flexShrink: 0 }}>
-          {read ? '已读' : tr('没读开')}
+          {att.parsed === 'native' ? tr('模型已看图') : read ? '已读' : tr('没读开')}
         </span>
       )}
     </>
   );
+  const image = att.id && IMAGE_NAME.test(att.name) ? <ChatImage id={att.id} name={att.name} /> : null;
   const style: React.CSSProperties = {
     display: 'flex',
     alignItems: 'center',
@@ -106,13 +144,16 @@ const AttachmentChip = ({
   };
   // 还没上传完的那份没有 id，点不了
   return att.id ? (
-    <button
-      onClick={() => void downloadAttachment(att.id, att.name).catch((e) => alert(e.message))}
-      style={{ ...style, width: '100%', textAlign: 'left' }}
-      title={tr('下载原件')}
-    >
-      {body}
-    </button>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {image}
+      <button
+        onClick={() => void downloadAttachment(att.id, att.name).catch((e) => alert(e.message))}
+        style={{ ...style, width: '100%', textAlign: 'left' }}
+        title={tr('下载原件')}
+      >
+        {body}
+      </button>
+    </div>
   ) : (
     <div style={style}>{body}</div>
   );
@@ -1469,7 +1510,7 @@ export const ChatSheet = ({
                 className="chip"
                 onClick={() => setAtts(atts.filter((_, j) => j !== i))}
               >
-                {KIND_LABEL[a.kind]} · {a.name.slice(0, 14)} · {humanSize(a.size)} ✕
+                {kindLabel(a.kind)} · {a.name.slice(0, 14)} · {humanSize(a.size)} ✕
               </button>
             ))}
           </div>
@@ -1801,13 +1842,17 @@ export const ChatSheet = ({
           onChange={(e) => {
             const list = e.target.files;
             if (!list?.length) return;
-            const r = addFiles(
-              atts,
-              [...list].map((f) => ({ name: f.name, type: f.type, size: f.size, blob: f })),
-              pendingKind.current,
-            );
-            setAtts(r.attachments);
-            setAttErr(r.ok ? '' : r.reason);
+            const kind = pendingKind.current;
+            // 🔴 先读字节、图片压小，再进列表（D132 · issue #53）—— 句柄过一会儿就死，见 image.ts
+            void Promise.all([...list].map((f) => readForUpload(f, kind)))
+              .then((prepared) => {
+                setAtts((cur) => {
+                  const r = addFiles(cur, prepared, kind);
+                  setAttErr(r.ok ? '' : r.reason);
+                  return r.attachments;
+                });
+              })
+              .catch((err: Error) => setAttErr(tr('读取附件失败：{a}', { a: err.message })));
           }}
         />
         </div>

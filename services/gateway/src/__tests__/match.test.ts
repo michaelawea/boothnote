@@ -61,7 +61,7 @@ describe('相似度', () => {
   });
 
   it('集团与旗下品牌互相认得（这些本来就该命中）', () => {
-    assert.ok(similarity('Erwin Havel Group (Thor)', 'Havel') >= 0.9);
+    assert.ok(similarity('Havel Mobil Group (Thor)', 'Havel') >= 0.9);
     assert.ok(similarity('Alpin Tannhof', 'Alpin') >= 0.9);
     assert.ok(similarity('Castella Group', 'Castella') >= 0.9);
   });

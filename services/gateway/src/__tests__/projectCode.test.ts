@@ -22,15 +22,15 @@ const row = (code: string, category: string | null, name: string | null): CodedR
 
 describe('seqOf —— 编号尾巴上那三位', () => {
   it('认得出自己这个 base 的', () => {
-    assert.equal(seqOf('EHG-HAVEL-2026', 'EHG-HAVEL-2026-007'), 7);
-    assert.equal(seqOf('EHG-HAVEL-2026', 'ehg-havel-2026-012'), 12, '大小写不算数');
+    assert.equal(seqOf('HMG-HAVEL-2026', 'HMG-HAVEL-2026-007'), 7);
+    assert.equal(seqOf('HMG-HAVEL-2026', 'hmg-havel-2026-012'), 12, '大小写不算数');
   });
 
   it('别的 base / 别的年份 / 不是数字 → null', () => {
-    assert.equal(seqOf('EHG-HAVEL-2026', 'EHG-HAVEL-2025-003'), null);
-    assert.equal(seqOf('EHG-HAVEL-2026', 'KNA-2026-001'), null);
-    assert.equal(seqOf('EHG-HAVEL-2026', 'EHG-HAVEL-2026-XYZ'), null);
-    assert.equal(seqOf('EHG-HAVEL-2026', null), null);
+    assert.equal(seqOf('HMG-HAVEL-2026', 'HMG-HAVEL-2025-003'), null);
+    assert.equal(seqOf('HMG-HAVEL-2026', 'KNA-2026-001'), null);
+    assert.equal(seqOf('HMG-HAVEL-2026', 'HMG-HAVEL-2026-XYZ'), null);
+    assert.equal(seqOf('HMG-HAVEL-2026', null), null);
   });
 });
 
@@ -53,12 +53,12 @@ describe('nextFreeSeq —— 下一个没被占的号', () => {
 
 describe('sameProject —— 这是不是同一个项目', () => {
   const rows = [
-    row('EHG-HAVEL-2026-002', 'DCDC_CHARGER', 'Havel 车载充电'),
-    row('EHG-HAVEL-2026-001', 'BATTERY', 'Havel CI-Bus 电池项目'),
+    row('HMG-HAVEL-2026-002', 'DCDC_CHARGER', 'Havel 车载充电'),
+    row('HMG-HAVEL-2026-001', 'BATTERY', 'Havel CI-Bus 电池项目'),
   ];
 
   it('品类对上就是同一个（D56：客户 + 品类 = 项目身份）', () => {
-    assert.equal(sameProject(rows, { category: 'BATTERY', name: '随便什么名字' })?.code, 'EHG-HAVEL-2026-001');
+    assert.equal(sameProject(rows, { category: 'BATTERY', name: '随便什么名字' })?.code, 'HMG-HAVEL-2026-001');
   });
 
   it('🔴 品类不同 = 不同项目，名字再像也不并', () => {
@@ -66,7 +66,7 @@ describe('sameProject —— 这是不是同一个项目', () => {
   });
 
   it('品类还没抽出来时才退回名字，且大小写/空格/短横线都不算数', () => {
-    assert.equal(sameProject(rows, { name: 'havel  ci bus 电池项目' })?.code, 'EHG-HAVEL-2026-001');
+    assert.equal(sameProject(rows, { name: 'havel  ci bus 电池项目' })?.code, 'HMG-HAVEL-2026-001');
     assert.equal(sameProject(rows, { name: 'Havel 逆变器项目' }), null);
   });
 
@@ -77,50 +77,50 @@ describe('sameProject —— 这是不是同一个项目', () => {
 });
 
 describe('pickCode —— 三个调用点共用的那份判断', () => {
-  const ask = { companyCode: 'EHG-HAVEL', year: 2026, twentyNext: 'EHG-HAVEL-2026-001' };
+  const ask = { companyCode: 'HMG-HAVEL', year: 2026, twentyNext: 'HMG-HAVEL-2026-001' };
 
   it('一条提案都没有 → 从 CRM 给的下限开号', () => {
-    assert.deepEqual(pickCode([], ask), { code: 'EHG-HAVEL-2026-001', reused: false });
+    assert.deepEqual(pickCode([], ask), { code: 'HMG-HAVEL-2026-001', reused: false });
   });
 
   it('🔴 同一个项目第二次问，给的是同一个编号（issue #18 全靠这条）', () => {
-    const rows = [row('EHG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
+    const rows = [row('HMG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
     assert.deepEqual(pickCode(rows, { ...ask, category: 'BATTERY', name: '另一次对话里的叫法' }), {
-      code: 'EHG-HAVEL-2026-001',
+      code: 'HMG-HAVEL-2026-001',
       reused: true,
     });
   });
 
   it('🔴 同一家客户、不同品类 → 新号，绝不复用', () => {
-    const rows = [row('EHG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
+    const rows = [row('HMG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
     assert.deepEqual(pickCode(rows, { ...ask, category: 'INVERTER', name: 'CI-Bus 逆变器' }), {
-      code: 'EHG-HAVEL-2026-002',
+      code: 'HMG-HAVEL-2026-002',
       reused: false,
     });
   });
 
   it('🔴 别家客户占着的号不影响我 —— 前缀要带那个短横线', () => {
-    // 代号 EHG 的客户不能因为 EHG-HAVEL 已经用到 009 就跳到 010
-    const rows = [row('EHG-HAVEL-2026-009', 'BATTERY', 'Havel 电池')];
-    assert.deepEqual(pickCode(rows, { companyCode: 'EHG', year: 2026, twentyNext: 'EHG-2026-001' }), {
-      code: 'EHG-2026-001',
+    // 代号 HMG 的客户不能因为 HMG-HAVEL 已经用到 009 就跳到 010
+    const rows = [row('HMG-HAVEL-2026-009', 'BATTERY', 'Havel 电池')];
+    assert.deepEqual(pickCode(rows, { companyCode: 'HMG', year: 2026, twentyNext: 'HMG-2026-001' }), {
+      code: 'HMG-2026-001',
       reused: false,
     });
   });
 
   it('跨年也复用 —— 2026 立的项目，2027 再提到它还是那个编号', () => {
-    const rows = [row('EHG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
-    const got = pickCode(rows, { companyCode: 'EHG-HAVEL', year: 2027, twentyNext: 'EHG-HAVEL-2027-001', category: 'BATTERY' });
-    assert.deepEqual(got, { code: 'EHG-HAVEL-2026-001', reused: true });
+    const rows = [row('HMG-HAVEL-2026-001', 'BATTERY', 'CI-Bus 电池')];
+    const got = pickCode(rows, { companyCode: 'HMG-HAVEL', year: 2027, twentyNext: 'HMG-HAVEL-2027-001', category: 'BATTERY' });
+    assert.deepEqual(got, { code: 'HMG-HAVEL-2026-001', reused: true });
   });
 
   it('新号避开 staging 里已经占住的，哪怕 CRM 还不知道它们', () => {
     const rows = [
-      row('EHG-HAVEL-2026-003', 'BATTERY', 'A'),
-      row('EHG-HAVEL-2026-002', 'DCDC_CHARGER', 'B'),
+      row('HMG-HAVEL-2026-003', 'BATTERY', 'A'),
+      row('HMG-HAVEL-2026-002', 'DCDC_CHARGER', 'B'),
     ];
     assert.deepEqual(pickCode(rows, { ...ask, category: 'INVERTER', name: 'C' }), {
-      code: 'EHG-HAVEL-2026-004',
+      code: 'HMG-HAVEL-2026-004',
       reused: false,
     });
   });
@@ -128,7 +128,7 @@ describe('pickCode —— 三个调用点共用的那份判断', () => {
 
 describe('codeBase —— 前缀', () => {
   it('客户代号 + 年份，非法字符去掉，不留多余的短横线', () => {
-    assert.equal(codeBase('EHG-HAVEL', 2026), 'EHG-HAVEL-2026');
+    assert.equal(codeBase('HMG-HAVEL', 2026), 'HMG-HAVEL-2026');
     assert.equal(codeBase('kna', 2026), 'KNA-2026');
     assert.equal(codeBase('A B/C', 2026), 'ABC-2026');
     assert.equal(codeBase('TREVANO-', 2026), 'TREVANO-2026');

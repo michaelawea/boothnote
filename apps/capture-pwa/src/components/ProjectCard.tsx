@@ -12,20 +12,22 @@ import { t } from '../i18n';
  * 在手机上编辑四条线程的截止日期是反效果的（手册 P8 的同一条判据）。
  */
 
+// 下面三张表存**中文规范形式**，渲染那一行才过 `t()`（D80 判据）——
+// 写成 `t('…')` 的话在 import 时就求值了，英文账号登录之后还是中文（issue #53 A3 的同一类）。
 const THREAD_LABEL: Record<string, string> = {
-  doc: t('文档'),
-  hardware: t('硬件接口'),
-  protocol: t('通信协议'),
-  software: t('测试软件'),
-  milestone: t('里程碑'),
-  other: t('其他'),
+  doc: '文档',
+  hardware: '硬件接口',
+  protocol: '通信协议',
+  software: '测试软件',
+  milestone: '里程碑',
+  other: '其他',
 };
 
 const PRIORITY_STYLE: Record<string, { bg: string; fg: string; label: string }> = {
-  URGENT: { bg: T.redSoft, fg: T.red, label: t('紧急') },
-  HIGH: { bg: T.amberSoft, fg: T.amber, label: t('高') },
-  MEDIUM: { bg: T.s3, fg: T.textSoft, label: t('中') },
-  LOW: { bg: T.s3, fg: T.textLight, label: t('低') },
+  URGENT: { bg: T.redSoft, fg: T.red, label: '紧急' },
+  HIGH: { bg: T.amberSoft, fg: T.amber, label: '高' },
+  MEDIUM: { bg: T.s3, fg: T.textSoft, label: '中' },
+  LOW: { bg: T.s3, fg: T.textLight, label: '低' },
 };
 
 /**
@@ -33,10 +35,10 @@ const PRIORITY_STYLE: Record<string, { bg: string; fg: string; label: string }> 
  * AI 整理的和客户给的长得一样，是这套系统最贵的一种错（D59）。
  */
 const DOC_SOURCE: Record<string, { bg: string; fg: string; label: string }> = {
-  CUSTOMER_ATTACHMENT: { bg: T.greenSoft, fg: T.green, label: t('客户提供') },
-  AGENT_GENERATED: { bg: T.amberSoft, fg: T.amber, label: t('AI 生成') },
-  DICTATION: { bg: T.amberSoft, fg: T.amber, label: t('按口述整理') },
-  INTERNAL: { bg: T.blueSoft, fg: T.blue, label: t('我方编写') },
+  CUSTOMER_ATTACHMENT: { bg: T.greenSoft, fg: T.green, label: '客户提供' },
+  AGENT_GENERATED: { bg: T.amberSoft, fg: T.amber, label: 'AI 生成' },
+  DICTATION: { bg: T.amberSoft, fg: T.amber, label: '按口述整理' },
+  INTERNAL: { bg: T.blueSoft, fg: T.blue, label: '我方编写' },
 };
 
 const box: React.CSSProperties = {
@@ -201,7 +203,7 @@ export const ProjectCard = ({
                         color: T.textSoft,
                       }}
                     >
-                      {THREAD_LABEL[w.threadType] ?? w.threadType}
+                      {t(THREAD_LABEL[w.threadType] ?? w.threadType)}
                     </span>
                     <span
                       style={{
@@ -213,7 +215,7 @@ export const ProjectCard = ({
                         fontWeight: 600,
                       }}
                     >
-                      {pri.label}
+                      {t(pri.label)}
                     </span>
                     <span style={{ flex: 1, minWidth: 0 }}>{w.title}</span>
                   </div>
@@ -258,7 +260,7 @@ export const ProjectCard = ({
                     fontWeight: 600,
                   }}
                 >
-                  {src.label}
+                  {t(src.label)}
                 </span>
               );
             })()}

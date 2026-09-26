@@ -18,12 +18,13 @@ import { t } from '../i18n';
  * ⚠️ **agent 只提议，不建。** 名单里没有的那几层，是人在这里点「新建」才建的
  * —— 而且走的是和别处同一套强制查重（§4.2 第3条）。
  */
+/** 存中文规范形式，渲染时才过 `t()`（D80 判据）—— 模块级 `t()` 在 import 时就定死语言了。 */
 const ROLE_LABEL: Record<string, string> = {
-  DISTRIBUTOR: t('分销商'),
-  SUB_DISTRIBUTOR: t('二级分销商'),
-  DEALER: t('经销商'),
-  SUB_DEALER: t('二级经销商'),
-  END_USER: t('终端客户'),
+  DISTRIBUTOR: '分销商',
+  SUB_DISTRIBUTOR: '二级分销商',
+  DEALER: '经销商',
+  SUB_DEALER: '二级经销商',
+  END_USER: '终端客户',
 };
 
 export const ChainCard = ({ chain }: { chain: Array<{ name: string; role: string }> }) => {
@@ -93,7 +94,7 @@ export const ChainCard = ({ chain }: { chain: Array<{ name: string; role: string
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
             <span style={{ fontSize: 11, color: T.textLight, width: 62, flexShrink: 0 }}>
-              {ROLE_LABEL[lv.role] ?? lv.role}
+              {t(ROLE_LABEL[lv.role] ?? lv.role)}
             </span>
             <span style={{ flex: 1, fontSize: 14 }}>{got?.name ?? lv.name}</span>
             {got ? (

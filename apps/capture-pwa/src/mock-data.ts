@@ -3,10 +3,10 @@
  * 接真数据时换成网关的一次 GET /companies，下拉行为完全不变。
  */
 export const COMPANIES = [
-  { code: 'HAVEL', name: 'Havel', group: 'Erwin Havel Group' },
-  { code: 'DELLMANNS', name: 'Dellmanns', group: 'Erwin Havel Group' },
-  { code: 'BRUCKNER', name: 'Brückner', group: 'Erwin Havel Group' },
-  { code: 'LIRIO', name: 'Lirio', group: 'Erwin Havel Group' },
+  { code: 'HAVEL', name: 'Havel', group: 'Havel Mobil Group' },
+  { code: 'DELLMANNS', name: 'Dellmanns', group: 'Havel Mobil Group' },
+  { code: 'BRUCKNER', name: 'Brückner', group: 'Havel Mobil Group' },
+  { code: 'LIRIO', name: 'Lirio', group: 'Havel Mobil Group' },
   { code: 'ISTRA', name: 'Istra', group: 'Istra Mobil' },
   { code: 'SEALIGHTS', name: 'Sea Lights', group: 'Istra Mobil' },
   { code: 'ALPIN', name: 'Alpin', group: 'Alpin Tannhof' },

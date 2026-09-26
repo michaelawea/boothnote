@@ -49,7 +49,15 @@ const nav = { onLine: true };
 vi.stubGlobal('navigator', nav);
 
 /** 一次上传请求，测试里逐条断言发出去的到底是什么。 */
-type Sent = { url: string; payload: Record<string, any>; fields: string[] };
+type Sent = {
+  url: string;
+  payload: Record<string, any>;
+  fields: string[];
+  /** 每个文件字段发出去的字节数 —— issue #53 那次发出去的是 0 */
+  sizes: Record<string, number>;
+  /** XHR 上设的超时 */
+  timeout: number;
+};
 const sent: Sent[] = [];
 
 type XhrReply = { status: number; text?: string } | { fail: 'network' | 'timeout' };
@@ -79,6 +87,12 @@ class FakeXHR {
       payload: JSON.parse(String(body.get('payload'))),
       // fieldname 就是附件的类型（photo / image / file）+ audio —— 自描述，不靠数组顺序
       fields: [...body.keys()].filter((k) => k !== 'payload'),
+      sizes: Object.fromEntries(
+        [...body.entries()]
+          .filter(([k, v]) => k !== 'payload' && v instanceof Blob)
+          .map(([k, v]) => [k, (v as Blob).size]),
+      ),
+      timeout: this.timeout,
     };
     sent.push(req);
     void (async () => {
@@ -226,11 +240,11 @@ describe('① 断网 → 落库 → 回网补传（展会的主场景）', () =>
   });
 
   it('🔴 幂等键是本地那个 id —— 服务端靠它挡重复（§4.2 第6条）', async () => {
-    await addNote({ id: 'a3-uuid', companyCode: 'EHG-HAVEL' });
+    await addNote({ id: 'a3-uuid', companyCode: 'HMG-HAVEL' });
     await flush();
 
     expect(sent[0].payload.clientId).toBe('a3-uuid');
-    expect(sent[0].payload.companyCode).toBe('EHG-HAVEL');
+    expect(sent[0].payload.companyCode).toBe('HMG-HAVEL');
     // 已经 synced 的不会被再传一次（`shouldUpload` 的第一条）
     await flush();
     expect(sent).toHaveLength(1);
@@ -242,7 +256,7 @@ describe('① 断网 → 落库 → 回网补传（展会的主场景）', () =>
       audioBlob: audio(),
       audioMime: 'audio/webm',
       attachments: [
-        { kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', size: 3, blob: new Blob(['abc']) },
+        { kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', size: 3, bytes: new Uint8Array([1, 2, 3]).buffer },
       ],
     });
 
@@ -255,13 +269,86 @@ describe('① 断网 → 落库 → 回网补传（展会的主场景）', () =>
     expect(n.text).toBe('在 Havel 聊了电池'); // 文本不省这点空间
   });
 
+  it('🔴 附件按字节发：发出去的 Blob 大小 = 存的字节数（issue #53：iPhone 发出去的是 0 字节）', async () => {
+    await addNote({
+      id: 'a4b',
+      attachments: [
+        { kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', size: 7, bytes: new Uint8Array(7).buffer },
+      ],
+    });
+
+    await flush();
+
+    expect(sent[0].sizes.photo).toBe(7);
+  });
+
+  it('上传成功后，服务端回的附件清单留在 remoteAttachments —— 原件丢了，📎 不能跟着没', async () => {
+    onUpload = () => ({
+      status: 201,
+      text: JSON.stringify({
+        inboxId: 'srv-4c',
+        attachments: [{ id: 'att-1', kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', bytes: 7 }],
+      }),
+    });
+    await addNote({
+      id: 'a4c',
+      attachments: [
+        { kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', size: 7, bytes: new Uint8Array(7).buffer },
+      ],
+    });
+
+    await flush();
+
+    const n = await got('a4c');
+    expect(n.attachments).toBeFalsy();
+    expect(n.remoteAttachments).toEqual([
+      { id: 'att-1', kind: 'photo', name: '展台.jpg', mime: 'image/jpeg', size: 7 },
+    ]);
+  });
+
+  it('老网关只回数量时，remoteAttachments 留空而不是塞进一个数字', async () => {
+    onUpload = () => ({ status: 201, text: JSON.stringify({ inboxId: 'srv-4d', attachments: 1 }) });
+    await addNote({
+      id: 'a4d',
+      attachments: [{ kind: 'file', name: 'a.pdf', mime: 'application/pdf', size: 1, bytes: new ArrayBuffer(1) }],
+    });
+    await flush();
+    expect((await got('a4d')).remoteAttachments).toBeUndefined();
+  });
+
+  it('2026-09-02 之前存的 File 附件照样会被发出去（能不能读是浏览器的事）', async () => {
+    await addNote({
+      id: 'a4e',
+      attachments: [{ kind: 'image', name: 'old.png', mime: 'image/png', size: 2, blob: new Blob(['ab']) }],
+    });
+    await flush();
+    expect(sent[0].fields).toEqual(['image']);
+    expect(sent[0].sizes.image).toBe(2);
+  });
+
+  it('超时跟着体积走：一句话 90 秒，一张 4 MB 的图给得更多（issue #53 B1）', async () => {
+    await addNote({ id: 'a4f' });
+    await addNote({
+      id: 'a4g',
+      createdAt: 1_700_000_000_001,
+      attachments: [
+        { kind: 'photo', name: 'big.jpg', mime: 'image/jpeg', size: 4 << 20, bytes: new ArrayBuffer(8) },
+      ],
+    });
+    await flush();
+    const plain = sent.find((s) => s.payload.clientId === 'a4f')!;
+    const withImg = sent.find((s) => s.payload.clientId === 'a4g')!;
+    expect(plain.timeout).toBe(90_000);
+    expect(withImg.timeout).toBeGreaterThan(90_000 + 100_000);
+  });
+
   it('附件的 fieldname 就是它的类型 —— 自描述，不靠数组顺序对齐', async () => {
     await addNote({
       id: 'a5',
       audioBlob: audio(),
       attachments: [
-        { kind: 'photo', name: 'p.jpg', mime: 'image/jpeg', size: 1, blob: new Blob(['a']) },
-        { kind: 'file', name: 'spec.pdf', mime: 'application/pdf', size: 1, blob: new Blob(['b']) },
+        { kind: 'photo', name: 'p.jpg', mime: 'image/jpeg', size: 1, bytes: new ArrayBuffer(1) },
+        { kind: 'file', name: 'spec.pdf', mime: 'application/pdf', size: 1, bytes: new ArrayBuffer(1) },
       ],
     });
 
@@ -546,6 +633,39 @@ describe('⑦ 拉回来的东西不许盖掉本地更新的那份', () => {
     expect(n.recordedBy).toBe('tester');
   });
 
+  it('🔴 换台手机：GET /inbox 的附件清单落进 remoteAttachments —— 否则那台上图片根本不存在（issue #53）', async () => {
+    onFetch = () => ({
+      status: 200,
+      body: {
+        items: [
+          remote({
+            attachments: [{ id: 'att-9', kind: 'photo', name: 'booth.jpg', mime: 'image/jpeg', bytes: 512 }],
+          }),
+        ],
+      },
+    });
+
+    await pullInbox();
+
+    expect((await got('x1')).remoteAttachments).toEqual([
+      { id: 'att-9', kind: 'photo', name: 'booth.jpg', mime: 'image/jpeg', size: 512 },
+    ]);
+  });
+
+  it('本地已 synced 但没有清单的（老版本传的），拉一次就补上', async () => {
+    await addNote({ id: 'x1', sync: 'synced', remoteId: 'srv-x' });
+    onFetch = () => ({
+      status: 200,
+      body: {
+        items: [remote({ attachments: [{ id: 'att-9', kind: 'file', name: 'a.pdf', mime: 'application/pdf', bytes: 1 }] })],
+      },
+    });
+
+    await pullInbox();
+
+    expect((await got('x1')).remoteAttachments?.map((a) => a.id)).toEqual(['att-9']);
+  });
+
   it('🔴 本地还在队列里的，一个字都不碰 —— 本地那份更新，正等着上传', async () => {
     await addNote({ id: 'x1', text: '我刚录的', sync: 'queued' });
     const before = await got('x1');
@@ -558,7 +678,7 @@ describe('⑦ 拉回来的东西不许盖掉本地更新的那份', () => {
             text: '服务端那份',
             transcript: '听出来的',
             title: '一句话标题',
-            company_code: 'EHG-HAVEL',
+            company_code: 'HMG-HAVEL',
             staging_id: 'st-1',
             thread_id: 'th-1',
             status: 'ready',

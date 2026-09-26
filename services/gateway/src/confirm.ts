@@ -714,7 +714,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
     let code = fromHuman || fromAgent;
     if (!code) {
       /*
-       * `Company.code` 就是 `accountCode`（如 EHG-HAVEL）—— 人类可读的稳定代号（D30）。
+       * `Company.code` 就是 `accountCode`（如 HMG-HAVEL）—— 人类可读的稳定代号（D30）。
        * 走 `suggestProjectCode` 而不是直接 `nextProjectCode`：后者只看 CRM，
        * 会把一个**已经被别的待确认提案占住**的号再发一次，两条入库时就并成一个项目了。
        */

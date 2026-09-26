@@ -609,7 +609,19 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
       payload = JSON.parse(String(part.value));
     }
   }
-  if (!payload?.clientId) return reply.code(400).send({ error: 'missing_client_id' });
+  if (!payload?.clientId) {
+    /**
+     * 🔴 这一行必须打（issue #53）。2026-09-02 展会现场 iPhone 传图一直 400，
+     * 网关这边**一个字的痕迹都没有**（Fastify 只打 warn 以上，4xx 不打；Caddy 没开访问日志），
+     * 最后是 tcpdump 抓到 `Content-Length: 0` 才定的案。空正文 = 客户端把 Blob 弄丢了，
+     * 不是「用户漏填了字段」—— 得让下一次一眼看出来。
+     */
+    console.warn(
+      `  ⚠️ POST /inbox 没有 payload：content-length=${req.headers['content-length'] ?? '?'} ` +
+        `files=${files.length}${audio ? '+audio' : ''} ua=${String(req.headers['user-agent'] ?? '').slice(0, 60)}`,
+    );
+    return reply.code(400).send({ error: 'missing_client_id' });
+  }
 
   /**
    * 🔴 **速记不自动跑 agent**（D31，维护者 2026-07-31 定，2026-08-03 重申）。
@@ -646,9 +658,13 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
     files,
   });
   if (ing.duplicate)
-    return reply
-      .code(200)
-      .send({ inboxId: ing.inboxId, stagingId: ing.stagingId, threadId: ing.threadId, duplicate: true });
+    return reply.code(200).send({
+      inboxId: ing.inboxId,
+      stagingId: ing.stagingId,
+      threadId: ing.threadId,
+      attachments: ing.attachments,
+      duplicate: true,
+    });
   const threadId = ing.threadId;
   const newMessageId = ing.newMessageId;
   const audioPath = ing.audioPath;
@@ -785,7 +801,8 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
     inboxId: ing.inboxId,
     stagingId: ing.stagingId,
     threadId,
-    attachments: files.length,
+    // 清单不是数量（issue #53）：客户端传成功就丢掉原件，之后靠这份引用显示 📎 和缩略图
+    attachments: ing.attachments,
     toAgent,
     duplicate: false,
     // D90：改口重发取代掉了几条。`supersedeFailed` = 那条没找到（不是自己的 /
@@ -1128,7 +1145,15 @@ app.get('/inbox', { preHandler: requireAuth }, async (req) => {
            -- 把「它被删了」这件事传下去，由客户端删掉本地那份。
            -- （⚠️ SQL 也是模板字符串，注释里不能出现反引号）
            s.note_deleted_at,
-           (select count(*) from attachment a where a.inbox_id = i.id)::int as attachments
+           -- 附件**清单**而不是数量（issue #53）：换台手机登录，列表上的 📎 和详情里的图
+           -- 全靠它；原件走 GET /attachments/:id/file
+           coalesce((
+             select jsonb_agg(jsonb_build_object(
+               'id', a.id, 'kind', a.kind, 'name', a.filename,
+               'mime', coalesce(a.mime, 'application/octet-stream'), 'bytes', a.bytes)
+               order by a.created_at, a.id)
+             from attachment a where a.inbox_id = i.id
+           ), '[]'::jsonb) as attachments
     from inbox i join staging s on s.inbox_id = i.id
     where i.user_id = ${req.user!.id}
       ${since ? sql`and i.created_at > ${new Date(since)}` : sql``}

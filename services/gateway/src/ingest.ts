@@ -52,6 +52,9 @@ export type IngestInput = {
   files?: IngestFile[];
 };
 
+/** 回包里的一条附件引用（issue #53）—— 客户端凭它显示 📎 和缩略图，原件走 GET /attachments/:id/file。 */
+export type IngestAttachment = { id: string; kind: string; name: string; mime: string; bytes: number };
+
 export type IngestResult = {
   duplicate: boolean;
   inboxId: string;
@@ -60,7 +63,18 @@ export type IngestResult = {
   /** 刚插进对话的那条用户消息（改口逻辑要用）。 */
   newMessageId: string | null;
   audioPath: string | null;
+  /**
+   * 这条速记名下的附件清单。**重传（duplicate）也带** —— 客户端第一次可能是超时了
+   * 而服务端其实收下了，第二次回来它得知道那几张图在。
+   */
+  attachments: IngestAttachment[];
 };
+
+/** 一条 inbox 名下的附件清单，按落库顺序。 */
+export const attachmentsOf = (inboxId: string) =>
+  sql<IngestAttachment[]>`
+    select id, kind, filename as name, coalesce(mime, 'application/octet-stream') as mime, bytes
+    from attachment where inbox_id = ${inboxId} order by created_at, id`;
 
 export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
   // 幂等（§4.2 第6条）：同一 clientId 重传直接回原记录
@@ -75,6 +89,7 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
       threadId: dup.thread_id,
       newMessageId: null,
       audioPath: null,
+      attachments: await attachmentsOf(dup.id),
     };
 
   const audioPath = input.audio ? await saveBlob(input.audio.buf, input.audio.name) : null;
@@ -104,11 +119,14 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
             ${input.deviceCreatedAt}, ${threadId}, ${input.source})
     returning id`;
 
+  const attachments: IngestAttachment[] = [];
   for (const f of input.files ?? []) {
     const rel = await saveBlob(f.buf, f.name);
-    await sql`
+    const [a] = await sql<Array<{ id: string }>>`
       insert into attachment (inbox_id, kind, filename, mime, bytes, path)
-      values (${row!.id}, ${f.kind}, ${f.name}, ${f.mime}, ${f.buf.length}, ${rel})`;
+      values (${row!.id}, ${f.kind}, ${f.name}, ${f.mime}, ${f.buf.length}, ${rel})
+      returning id`;
+    attachments.push({ id: a!.id, kind: f.kind, name: f.name, mime: f.mime, bytes: f.buf.length });
   }
 
   // 客户端已转好的就别再转一遍（issue #15）——存 transcript 不存 text，三层各答一个问题
@@ -138,5 +156,6 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
     threadId,
     newMessageId,
     audioPath,
+    attachments,
   };
 };
