@@ -1,0 +1,130 @@
+{
+  "_readme": [
+    "情报清单（示例）—— 展台上要慢慢问出来的那些问题。**清单是数据不是代码：改问法不发版。**",
+    "改完重跑 `node scripts/seed-intel-items.mjs --yes`（幂等，按 itemKey 认领）。",
+    "",
+    "两类项，靠 itemKey 区分，代码不需要知道是哪类：",
+    "  · itemKey 等于 Company 上的字段名（annualProduction / chassisBrand …）→ 答案落在客户档案那一列",
+    "  · itemKey 是自定义键（battery_chemistry …）→ 答案落 intelValue 一行",
+    "",
+    "wave   = 第几次见面问。1 = 首访就能问，3 = 关系够了才问。展台前只露最靠前的 3 个。",
+    "weight = 完整度权重。agent 当场造的项 weight=0，不进分母。",
+    "requiredForStage = 阶段门：想把商机推到这一格，这一项必须有值。",
+    "",
+    "This is the example checklist for the RV-OEM vertical. Replace it with the questions your own sales team asks."
+  ],
+  "items": [
+    {
+      "itemKey": "annualProduction",
+      "question": "你们一年大概造多少辆车？",
+      "questionEn": "Roughly how many vehicles do you build per year?",
+      "wave": 1,
+      "weight": 10,
+      "valueType": "text",
+      "why": "所有测算的分母。"
+    },
+    {
+      "itemKey": "vehicleTypes",
+      "question": "主要做哪几类车？",
+      "questionEn": "Which vehicle types make up most of your range?",
+      "wave": 1,
+      "weight": 6,
+      "valueType": "select",
+      "why": "车型决定电气系统的量级。"
+    },
+    {
+      "itemKey": "positioning",
+      "question": "主要走高端还是中端？",
+      "questionEn": "Are you mostly premium or mid-market?",
+      "wave": 1,
+      "weight": 5,
+      "valueType": "select",
+      "why": "定位决定先谈价格还是先谈性能。"
+    },
+    {
+      "itemKey": "battery_chemistry",
+      "question": "电池现在用锂电还是铅酸？",
+      "questionEn": "Lithium or lead-acid in today's builds?",
+      "wave": 1,
+      "weight": 8,
+      "valueType": "text",
+      "why": "还在铅酸 = 有转换窗口；已经锂电 = 要谈替换在位品牌。"
+    },
+    {
+      "itemKey": "next_model_year",
+      "question": "下一代车型是哪一年？什么时候锁供应商？",
+      "questionEn": "What's the next model year, and when do you lock suppliers?",
+      "wave": 1,
+      "weight": 10,
+      "valueType": "text",
+      "requiredForStage": "RFQ_QUOTE",
+      "why": "整车是车型年周期 —— 「现在没机会」往往只是「下一个车型年才有」。"
+    },
+    {
+      "itemKey": "current_pain",
+      "question": "现在这套电气系统最头疼的是什么？",
+      "questionEn": "What's the biggest headache in your current electrical setup?",
+      "wave": 1,
+      "weight": 7,
+      "valueType": "text",
+      "why": "在展台上能自然问出口、又直接指向切入点。"
+    },
+    {
+      "itemKey": "hqCountry",
+      "question": "总部在哪个国家？",
+      "questionEn": "Where are you headquartered?",
+      "wave": 1,
+      "weight": 3,
+      "valueType": "text",
+      "why": "背景信息，多数导入时就有。"
+    },
+    {
+      "itemKey": "electrical_architecture",
+      "question": "电气架构是 12V，还是在看 48V？",
+      "questionEn": "Is the architecture 12V, or are you looking at 48V?",
+      "wave": 2,
+      "weight": 8,
+      "valueType": "text",
+      "requiredForStage": "SAMPLE_TESTING",
+      "why": "送样之前必须知道 —— 电压等级送错，这一轮就废了。"
+    },
+    {
+      "itemKey": "annual_battery_demand",
+      "question": "电池一年大概要多少套？",
+      "questionEn": "How many battery sets per year?",
+      "wave": 2,
+      "weight": 9,
+      "valueType": "number",
+      "requiredForStage": "RFQ_QUOTE",
+      "why": "报价的前提。注意这是需求量，不是整车产量。"
+    },
+    {
+      "itemKey": "decision_maker_role",
+      "question": "选型最后谁拍板（采购 / 技术 / 总经理）？",
+      "questionEn": "Who has the final say on supplier selection (purchasing / engineering / GM)?",
+      "wave": 2,
+      "weight": 8,
+      "valueType": "text",
+      "requiredForStage": "NOMINATED",
+      "why": "只记角色，不记自然人姓名。"
+    },
+    {
+      "itemKey": "chassisBrand",
+      "question": "底盘主要用哪家？",
+      "questionEn": "Which chassis do you mainly build on?",
+      "wave": 2,
+      "weight": 5,
+      "valueType": "text",
+      "why": "底盘决定 DC/DC 与整车通信的接口约束。"
+    },
+    {
+      "itemKey": "purchase_cycle",
+      "question": "供应商定点一般提前多久？",
+      "questionEn": "How far ahead do you usually nominate suppliers?",
+      "wave": 3,
+      "weight": 5,
+      "valueType": "text",
+      "why": "把下一个车型年换算成「什么时候该动手」。"
+    }
+  ]
+}

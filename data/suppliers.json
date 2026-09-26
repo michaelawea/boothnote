@@ -1,0 +1,28 @@
+{
+  "_说明": [
+    "在位竞品名单（示例，全部虚构）—— `productFitment.supplier` 只能指向这里面已经存在的记录。",
+    "",
+    "为什么是受控名单而不是自由文本：同一家会被写成三四种样子（Voltaro / voltaro / Voltaro Energy），",
+    "于是「在位品牌份额」这个聚合永远算不对，而且看起来完全正常。",
+    "名单不全的后果是静默的：agent 抽出了品牌但名单里没有 → 品牌字段留空，原话进「来源说明」。",
+    "",
+    "改这个文件不需要发版：改完重跑 `node scripts/seed-suppliers.mjs`。"
+  ],
+  "suppliers": [
+    {
+      "name": "Voltaro Energy",
+      "categories": ["INVERTER", "DCDC_CHARGER", "ACDC_CHARGER", "MONITOR_EIOT", "SOLAR_PANEL"],
+      "note": "示例：最常见的在位品牌"
+    },
+    {
+      "name": "Brändle Elektronik",
+      "categories": ["INVERTER", "DCDC_CHARGER", "BATTERY_CHARGER", "SOLAR_PANEL"],
+      "note": "示例：带变音字母，用来验证名字归一化"
+    },
+    {
+      "name": "Norvolta",
+      "categories": ["BATTERY_CHARGER", "MONITOR_EIOT"],
+      "note": "示例"
+    }
+  ]
+}

@@ -1,0 +1,270 @@
+# Boothnote —— 展会现场情报采集系统 —— 编排文件（本地与 VPS 共用同一份）
+#
+# 基线：twentyhq/twenty · packages/twenty-docker/docker-compose.yml
+# 规划文档 D8：**零改源码、纯 API 集成**。本文件是唯一允许偏离上游的地方，
+# 每一处偏离都标了 [本项目]，升级 Twenty 时逐条对照即可。
+#
+# 本地：docker compose up -d          （override 文件会自动叠加，见 docker-compose.override.yml）
+# 云上：git pull && docker compose up -d
+name: boothnote
+
+services:
+  # ── Twenty 内核台（D8：官方镜像原样运行，只通过 API 交互）────────────────
+  server:
+    image: twentycrm/twenty:${TAG:-v2.25.1}
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    ports:
+      # [本项目] 只绑回环。本地 → http://localhost:3000；
+      #          云上 → Caddy 反代并负责 HTTPS，Twenty 本身不直接暴露到公网。
+      #          同一份文件两边都安全，因此不需要 override 文件。
+      - "127.0.0.1:3000:3000"
+    environment:
+      NODE_PORT: 3000
+      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD:-postgres}@${PG_DATABASE_HOST:-db}:${PG_DATABASE_PORT:-5432}/default
+      SERVER_URL: ${SERVER_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DISABLE_DB_MIGRATIONS: ${DISABLE_DB_MIGRATIONS}
+      DISABLE_CRON_JOBS_REGISTRATION: ${DISABLE_CRON_JOBS_REGISTRATION}
+
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      STORAGE_S3_REGION: ${STORAGE_S3_REGION}
+      STORAGE_S3_NAME: ${STORAGE_S3_NAME}
+      STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT}
+
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      FALLBACK_ENCRYPTION_KEY: ${FALLBACK_ENCRYPTION_KEY}
+      APP_SECRET: ${APP_SECRET:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: curl --fail http://localhost:3000/healthz
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: always
+
+  worker:
+    image: twentycrm/twenty:${TAG:-v2.25.1}
+    volumes:
+      - server-local-data:/app/packages/twenty-server/.local-storage
+    command: ["yarn", "worker:prod"]
+    environment:
+      PG_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD:-postgres}@${PG_DATABASE_HOST:-db}:${PG_DATABASE_PORT:-5432}/default
+      SERVER_URL: ${SERVER_URL}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      DISABLE_DB_MIGRATIONS: "true"            # 由 server 跑
+      DISABLE_CRON_JOBS_REGISTRATION: "true"   # 由 server 跑
+
+      STORAGE_TYPE: ${STORAGE_TYPE:-local}
+      STORAGE_S3_REGION: ${STORAGE_S3_REGION}
+      STORAGE_S3_NAME: ${STORAGE_S3_NAME}
+      STORAGE_S3_ENDPOINT: ${STORAGE_S3_ENDPOINT}
+
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      FALLBACK_ENCRYPTION_KEY: ${FALLBACK_ENCRYPTION_KEY}
+      APP_SECRET: ${APP_SECRET:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    restart: always
+
+  # ── 数据层 ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16
+    ports:
+      # [本项目] 只绑回环，给「应用跑在宿主机、数据库跑在容器」的本地开发姿势用（D29 / §4.5）。
+      #          云上应用也在容器里、走 compose 内网，这个端口无人访问 —— 留着无害。
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      # [本项目] 首次初始化时额外建一个 boothnote 库，放我们自己的表
+      #          （inbox / staging / IntelItem / 审计）—— 见 infra/initdb/
+      #          注意：这段只在数据卷为空时跑一次，已经初始化过的库不会重跑
+      - ./infra/initdb:/docker-entrypoint-initdb.d:ro
+    environment:
+      POSTGRES_DB: ${PG_DATABASE_NAME:-default}
+      POSTGRES_PASSWORD: ${PG_DATABASE_PASSWORD:-postgres}
+      POSTGRES_USER: ${PG_DATABASE_USER:-postgres}
+    healthcheck:
+      test: pg_isready -U ${PG_DATABASE_USER:-postgres} -h localhost -d postgres
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+
+  redis:
+    image: redis:7
+    restart: always
+    command: ["--maxmemory-policy", "noeviction"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ── 以下两个只在生产起（profile: prod）────────────────────────────────
+  # 本地开发时网关跑在宿主机（npm run dev，热重载 + 断点），符合 §4.5 的
+  # 「应用在宿主机、数据在容器」；云上才进容器。Caddy 本地根本不需要。
+  #   本地： docker compose up -d
+  #   云上： docker compose --profile prod up -d --build
+
+  gateway:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      APP_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD}@db:5432/boothnote
+      GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET}
+      GATEWAY_TOKEN_DAYS: ${GATEWAY_TOKEN_DAYS:-90}
+      SERVER_URL: http://server:3000          # 容器内网直连 Twenty，不绕公网
+      TWENTY_API_KEY: ${TWENTY_API_KEY}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_TRANSCRIBE_MODEL: ${OPENAI_TRANSCRIBE_MODEL:-gpt-4o-transcribe}
+      OPENAI_EXTRACT_MODEL: ${OPENAI_EXTRACT_MODEL:-gpt-5.6-luna}
+      # 起标题用（issue #15）。留空 = 跟抽取用同一个模型（env.ts 里做的回退）。
+      # ⚠️ 这里必须写 `:-`（空默认），不能省掉这一行 —— 省掉就是 D66 那个形状：
+      #    .env 里设了、preflight 报绿，而容器里读不到。
+      OPENAI_TITLE_MODEL: ${OPENAI_TITLE_MODEL:-}
+      # D85（issue #19）：启动时用一段合成静音真发一次转写。生产上**别关** ——
+      # 关掉等于把「语音坏了」的发现时刻推回到展会现场第一段录音。
+      TRANSCRIBE_SELFTEST: ${TRANSCRIBE_SELFTEST:-1}
+      # 🔴 D66：下面这些以前一个都没传进来。`.env` 里写了、preflight 也报绿，
+      #    但容器内是空的 —— 于是控制台永远 503、看板链接指向容器内网地址、
+      #    agent 的四个开关调了等于没调。**env.ts 读什么，这里就必须有什么。**
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # 🔴 D67：看板链接是**发到别人手机上**的，必须是公网地址。
+      #    BOARD_URL 空时由 CRM_DOMAIN 推出来（协议写死 https），所以它也得传进来。
+      #    上面那个 SERVER_URL=http://server:3000 只够网关自己用，发出去就是打不开。
+      BOARD_URL: ${BOARD_URL:-}
+      CRM_DOMAIN: ${CRM_DOMAIN:-}
+      AGENT_ENABLED: ${AGENT_ENABLED:-1}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
+      # 2026-08-05 60s → 120s（T51）；2026-08-17 → 180s：开了思考每轮更慢（D125）
+      AGENT_TIMEOUT_MS: ${AGENT_TIMEOUT_MS:-180000}
+      # 🔴 思考档位。不设 = 请求里 effort:none（思考关着），实测过 —— 不是服务端默认。
+      AGENT_REASONING: ${AGENT_REASONING:-high}
+      AGENT_CAN_CREATE_COLUMNS: ${AGENT_CAN_CREATE_COLUMNS:-0}
+      ATTACHMENT_MAX_CHARS: ${ATTACHMENT_MAX_CHARS:-32000}
+      # D71：附件原生喂给模型的单文件上限。超了整件降级走本地解析，不是截断。
+      ATTACHMENT_INLINE_MAX_BYTES: ${ATTACHMENT_INLINE_MAX_BYTES:-10485760}
+      CONFIRM_DELAY_MS: ${CONFIRM_DELAY_MS:-5000}
+      # ── 钉钉渠道（T93 · D117–D120）。留空 = 渠道 503 关闭，出站也不跳。──
+      # 🔴 同上那条 D66：`env.ts` 读什么，这里就必须有什么 —— 不写这几行的话
+      #    `.env` 配好了、preflight 报绿，而容器里 `/channels/dingtalk/events` 永远 503。
+      CHANNEL_DINGTALK_SECRET: ${CHANNEL_DINGTALK_SECRET:-}
+      # 出站回执的兜底 webhook。每个群自己的记在库里（管理台配），这个只是单群试点用。
+      DINGTALK_DEFAULT_WEBHOOK: ${DINGTALK_DEFAULT_WEBHOOK:-}
+      # 连接平台「流程 webhook」的关键词触发条件（D122 · §2.52）。
+      # 🔴 关键词对不上时钉钉**静默丢消息还回 200**，我们这边发现不了 ——
+      #    改了流程里的关键词，这里必须跟着改。只对 connector.dingtalk.com 那种地址生效。
+      CHANNEL_FLOW_KEYWORD: ${CHANNEL_FLOW_KEYWORD:-agentwork}
+      # L1 门卫的模型。留空 = 跟抽取同一个（同 OPENAI_TITLE_MODEL 的写法）。
+      GATE_MODEL: ${GATE_MODEL:-}
+      # ── Agent 路由器（D127）：统一入口，服务端分流。──
+      # off = 回到 D127 之前的行为（统一入口每条都进速记）—— 回滚开关，不用回滚代码。
+      CHANNEL_ROUTER: ${CHANNEL_ROUTER:-on}
+      ROUTER_MODEL: ${ROUTER_MODEL:-}
+      ROUTER_TIMEOUT_MS: ${ROUTER_TIMEOUT_MS:-4000}
+      # 日常助手（D128）：路由器的第三个去向（测试/打招呼/杂项，单次直答）
+      CHAT_MODEL: ${CHAT_MODEL:-}
+      CHAT_TIMEOUT_MS: ${CHAT_TIMEOUT_MS:-8000}
+      # 🔴 同 D67：回执里「去确认入库」那个链接是**发到别人钉钉里**的，必须是公网地址。
+      #    留空时由 CAPTURE_DOMAIN 推（协议写死 https）；两个都没有就不放链接（不放坏链接）。
+      CAPTURE_URL: ${CAPTURE_URL:-}
+      CAPTURE_DOMAIN: ${CAPTURE_DOMAIN:-}
+      # ── 实验室 agent（T94）：群里的第二个 bot。──
+      # secret 留空 = 和上面的 CHANNEL_DINGTALK_SECRET 共用（env.ts 里做的回退）；
+      # 填了就是给它单独一把钥匙。**这一行不能省** —— 省掉就是 D66 那个形状。
+      CHANNEL_LAB_SECRET: ${CHANNEL_LAB_SECRET:-}
+      LAB_SESSION_WINDOW_MIN: ${LAB_SESSION_WINDOW_MIN:-30}
+      LAB_SYNC_WAIT_MS: ${LAB_SYNC_WAIT_MS:-12000}
+      LAB_MAX_STEPS: ${LAB_MAX_STEPS:-8}
+      LAB_TIMEOUT_MS: ${LAB_TIMEOUT_MS:-120000}
+      # 实验室 agent 的模型与思考档位（D125）。
+      # 🔴 LAB_REASONING 不设 = 请求里 effort:none（思考关着），实测过。
+      LAB_MODEL: ${LAB_MODEL:-}
+      LAB_REASONING: ${LAB_REASONING:-high}
+      # 产品知识 skill（T95）。留空 = 下载工具整个不注册。
+      # 共享链接对公司内所有人开放，bot 会把它发进群里（维护者 2026-08-17 定）。
+      PRODUCT_DOCS_SHARE_URL: ${PRODUCT_DOCS_SHARE_URL:-}
+      PRODUCT_DOCS_MAX_BYTES: ${PRODUCT_DOCS_MAX_BYTES:-26214400}
+      # 默认值必须和 env.ts 里的逐字相同 —— 写成 `:-}` 会把路径顶成空串（见下面 OPENAI_BASE_URL 那条）
+      PRODUCT_DOCS_LIBRARY_PATH: ${PRODUCT_DOCS_LIBRARY_PATH:-/sites/Products/Shared%20Documents}
+      # 定价那份不在镜像里，是挂进来的一个文件；不配 = agent 没有这份资料。
+      # LAB_PRICING_GROUPS 留空 = 所有群都能问（收窄开关，不是授权开关）
+      PRODUCT_PRICING_FILE: ${PRODUCT_PRICING_FILE:-}
+      LAB_PRICING_GROUPS: ${LAB_PRICING_GROUPS:-}
+      # ⚠️ OPENAI_BASE_URL 故意不在这里传。`opt()` 是 `process.env[k] ?? file[k] ?? fallback`，
+      #    空字符串**不是** undefined —— 写成 `${OPENAI_BASE_URL:-}` 会把 baseUrl 顶成空串，
+      #    所有 OpenAI 调用当场全挂。要换 provider 就在这里写死完整地址。
+    volumes:
+      - audio-data:/data/audio
+      # 🔴 **转写词表必须挂进来，它不在镜像里。**
+      #    `.dockerignore` 里有 `data/`（D29：Mac 上的东西别进 x86 镜像），
+      #    于是 `data/stt-terms.json` 根本没被 COPY —— 2026-08-05 实测：
+      #    容器里 `industryTerms()` 返回 **0 条**，静默退回「只喂品牌名」，
+      #    也就是这次改动想解决的那个问题原封不动地还在。
+      #    挂进来还有一个好处：**改词表不用重新构建镜像**（和 D62 同一个套路），
+      #    改完 `docker compose restart gateway` 就生效。
+      - ./data/stt-terms.json:/data/stt-terms.json:ro
+      # 🔴 **同一个坑的第二次**：`PRODUCT_PRICING_FILE` 指的是**容器里**的路径。
+      #    定价那份刻意不进 git（T95），所以它只存在于宿主机上 —— 不挂进来的话，
+      #    容器里那个路径不存在，代码只会 warn 一句然后**当没有定价**，
+      #    而群里问价会得到「资料里没有」——**一次配置失误伪装成一次数据缺失**。
+      #    挂整个 data 目录（只读）而不是单个文件：单文件 bind mount 在宿主机上
+      #    文件不存在时，docker 会**建一个同名目录**，比读不到更难查。
+      - ./data:/data-src:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      server:
+        condition: service_healthy
+    restart: always
+
+  caddy:
+    profiles: ["prod"]
+    build:
+      context: .
+      dockerfile: infra/caddy/Dockerfile
+    environment:
+      CAPTURE_DOMAIN: ${CAPTURE_DOMAIN}
+      CRM_DOMAIN: ${CRM_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      # Flexible: SITE_SCHEME=http://  且 TLS_DIRECTIVE 留空
+      # Full(strict): SITE_SCHEME 留空 且 TLS_DIRECTIVE=tls /certs/origin.pem /certs/origin.key
+      # 详见 infra/caddy/Caddyfile 顶部注释
+      ADMIN_PATH: ${ADMIN_PATH:-/console}
+      SITE_SCHEME: ${SITE_SCHEME:-}
+      TLS_DIRECTIVE: ${TLS_DIRECTIVE:-}
+    ports:
+      # 唯一对公网开放的两个端口。Twenty 与 Postgres 只绑回环，永不触网。
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy-data:/data       # 证书，别丢，否则每次重建都重新签发会撞 LE 限流
+      - caddy-config:/config
+      # Cloudflare Origin Certificate 放这里（模式 A）。用 Let's Encrypt 时该目录为空，无害。
+      - ./infra/caddy/certs:/certs:ro
+      # 镜像里本来就 COPY 了一份 Caddyfile；挂载它是为了改配置只需
+      # `docker compose --profile prod up -d caddy`，不必重建镜像（重建会连
+      # PWA 一起 npm ci）。两处指向同一个文件，不会不一致。
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - gateway
+      - server
+    restart: always
+
+volumes:
+  db-data:
+  server-local-data:
+  audio-data:
+  caddy-data:
+  caddy-config:

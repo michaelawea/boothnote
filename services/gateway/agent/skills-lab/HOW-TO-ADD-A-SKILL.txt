@@ -1,0 +1,49 @@
+# 实验室 agent 的 skill 目录
+
+> 这里**一开始是空的，那是设计**（T94 / D121）。往里放 SKILL.md，那个 agent 就有了本事。
+> 它是钉钉里的第二个 bot，和「速记」录入 bot 完全分开：不同的 secret、不同的工具、
+> 不同的消息史，**这里的 agent 一条能写 CRM 的路径都没有**。
+
+## 加一本 skill
+
+```
+agent/skills-lab/<名字>/SKILL.md
+```
+
+格式是 agentskills.io 标准（YAML frontmatter + 正文）：
+
+```markdown
+---
+name: pricing
+description: 报价口径 —— 有人问折扣/价格/MOQ 时按这本回答
+---
+
+# 报价口径
+
+- 经销商价按 ... 折
+- MOQ 低于 20 台要走 维护者 审批
+- 🔴 不要在群里说具体的成本价
+```
+
+**`description` 那一行是承重的**：系统提示词里只出现 name + description，
+模型据此判断「这一本相关吗」，相关才用 `read_skill` 拉全文（渐进披露，D72）。
+写得含糊 = 它永远不会被翻开。
+
+## 生效方式
+
+**改这里不用发版** —— 文件是数据，不是代码。放好之后：
+
+```bash
+docker compose --profile prod restart gateway
+```
+
+启动日志里会打 `📖 实验室 playbook ×N：pricing / …`。
+`×0` 是正常的（还没装东西），不是故障。
+
+## 几条边界
+
+- **没有执行 shell / 读写文件的工具** —— SKILL.md 里写「运行这个脚本」它做不到，
+  那是另一个量级的暴露面，真要做单独立项。
+- **它不能写 CRM，也不能读客户数据**（起点只有 `read_skill` 一个工具）。
+  要让它查真数据，得给它挂只读工具 —— 改 `agent/src/lab.ts`，那是发版动作。
+- 一本 skill 的全文会整段进上下文，别写成几千行 —— 长了就拆成几本。

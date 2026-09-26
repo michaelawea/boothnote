@@ -1,0 +1,57 @@
+import type { Company } from '../host.ts';
+
+/**
+ * 一轮 agent 跑动的上下文。
+ *
+ * 注意这里面**没有** `role`、没有 token、没有任何「这个用户能看什么」的东西。
+ * 作用域是网关在把活取出来之前就裁好的（§4.2 第4条），agent 拿到的已经是
+ * 它有权处理的那一条 —— 它没有办法把范围扩大，因为它手上根本没有可以扩大的钥匙。
+ */
+export type SkillContext = {
+  inboxId: string;
+  stagingId: string;
+  threadId: string | null;
+  userId: string;
+  userCode: string;
+  displayName: string;
+  companies: Company[];
+  suppliers: Array<{ id: string; name: string }>;
+  /**
+   * 这条速记的附件。**id 必须给到 prompt 里** ——
+   * 不给的话 agent 会拿文件名当 id 传给 `read_attachment`，
+   * 结果是 `invalid input syntax for type uuid`，白白烧掉一步（2026-08-03 实测）。
+   */
+  attachments: Array<{ id: string; filename: string }>;
+  /** 这一轮的步数上限。写进 prompt 让它自己安排顺序，别把 propose_fields 留到最后。 */
+  maxSteps: number;
+  /**
+   * 要**推送**全文的 playbook（D72 的「推」半边）：loop 已经知道类型时
+   * （带附件 / 上一轮判成了 project）直接把那本塞进系统提示词，省一步 read_skill。
+   * 「拉」（read_skill）仍然可用 —— 模型中途改判时自己能翻到正确的册子。
+   */
+  pushPlaybooks: string[];
+  /**
+   * true = 这一轮带着上一轮的完整消息史续跑（D73①）。
+   * prompt 据此告诉模型「上下文已经在了，不用再 get_thread」—— 省一步。
+   */
+  resumed: boolean;
+
+  /** 护栏②的计数器：一条速记最多造 1 个情报字段。 */
+  intelFieldsCreated: number;
+  /** agent 想问人的话，落在这里，由 loop 写进对话。 */
+  questions: Array<{ question: string; options?: string[] }>;
+  /** 它提议过的新客户名，只提议不建（§4.2 第3条）。 */
+  suggestedCompany: string | null;
+  /** 已经调用过 propose_fields 没有 —— 用来判断这一轮到底有没有产出。 */
+  proposed: boolean;
+};
+
+export const newContext = (
+  base: Omit<SkillContext, 'intelFieldsCreated' | 'questions' | 'suggestedCompany' | 'proposed'>,
+): SkillContext => ({
+  ...base,
+  intelFieldsCreated: 0,
+  questions: [],
+  suggestedCompany: null,
+  proposed: false,
+});

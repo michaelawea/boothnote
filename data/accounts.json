@@ -1,0 +1,208 @@
+{
+  "source": "Demo dataset — every company here is fictional.",
+  "note": "Example target list for the RV-OEM example vertical: 4 OEM groups + 14 brands. Imported by scripts/import-accounts.mjs (idempotent, keyed by accountCode). Replace this file with your own target list.",
+  "accounts": [
+    {
+      "accountCode": "HAVEL_GROUP",
+      "name": "Havel Group",
+      "accountType": "OEM_GROUP",
+      "hqCountry": "Germany",
+      "annualProduction": "30,000-35,000",
+      "groupRanking": "#1 in the demo market",
+      "parentCode": null
+    },
+    {
+      "accountCode": "ALPIN_TANNHOF",
+      "name": "Alpin Tannhof",
+      "accountType": "OEM_GROUP",
+      "hqCountry": "Germany",
+      "annualProduction": "20,000-24,000",
+      "groupRanking": "#2 in the demo market",
+      "parentCode": null
+    },
+    {
+      "accountCode": "TREVANO_GROUP",
+      "name": "Trevano Group",
+      "accountType": "OEM_GROUP",
+      "hqCountry": "France",
+      "annualProduction": "15,000-18,000",
+      "groupRanking": "#3 in the demo market",
+      "parentCode": null
+    },
+    {
+      "accountCode": "ISTRA_MOBIL",
+      "name": "Istra Mobil",
+      "accountType": "OEM_GROUP",
+      "hqCountry": "Slovenia",
+      "annualProduction": "8,000 (approx.)",
+      "groupRanking": "#4 in the demo market",
+      "parentCode": null
+    },
+    {
+      "accountCode": "HAVEL",
+      "name": "Havel",
+      "accountType": "OEM_BRAND",
+      "parentCode": "HAVEL_GROUP",
+      "hqCountry": "Germany",
+      "annualProduction": "7,000-9,000",
+      "productTypeRaw": "A/B/C-Class Motorhome",
+      "vehicleTypes": ["A_CLASS", "B_CLASS", "C_CLASS", "MOTORHOME"],
+      "positioning": "HIGH",
+      "groupRanking": "#1 in the demo market"
+    },
+    {
+      "accountCode": "DELLMANNS",
+      "name": "Dellmanns",
+      "accountType": "OEM_BRAND",
+      "parentCode": "HAVEL_GROUP",
+      "hqCountry": "Germany",
+      "annualProduction": "6,000-7,000",
+      "productTypeRaw": "Motorhome+Caravan",
+      "vehicleTypes": ["CARAVAN", "MOTORHOME"],
+      "positioning": "MID",
+      "groupRanking": "#1 in the demo market"
+    },
+    {
+      "accountCode": "BRUCKNER",
+      "name": "Brückner",
+      "accountType": "OEM_BRAND",
+      "parentCode": "HAVEL_GROUP",
+      "hqCountry": "Germany",
+      "annualProduction": "5,000-6,000",
+      "productTypeRaw": "Motorhome",
+      "vehicleTypes": ["MOTORHOME"],
+      "positioning": "MID",
+      "groupRanking": "#1 in the demo market"
+    },
+    {
+      "accountCode": "ALPIN",
+      "name": "Alpin",
+      "accountType": "OEM_BRAND",
+      "parentCode": "ALPIN_TANNHOF",
+      "hqCountry": "Germany",
+      "annualProduction": "9,000-10,000",
+      "productTypeRaw": "Motorhome+Campervan",
+      "vehicleTypes": ["MOTORHOME", "CAMPERVAN"],
+      "positioning": "MID",
+      "groupRanking": "#2 in the demo market"
+    },
+    {
+      "accountCode": "TANNHOF",
+      "name": "Tannhof",
+      "accountType": "OEM_BRAND",
+      "parentCode": "ALPIN_TANNHOF",
+      "hqCountry": "Germany",
+      "annualProduction": "4,000-5,000",
+      "productTypeRaw": "Caravan",
+      "vehicleTypes": ["CARAVAN"],
+      "positioning": "MID",
+      "groupRanking": "#2 in the demo market"
+    },
+    {
+      "accountCode": "ROSENFELD",
+      "name": "Rosenfeld",
+      "accountType": "OEM_BRAND",
+      "parentCode": "ALPIN_TANNHOF",
+      "hqCountry": "Germany",
+      "annualProduction": "5,000-6,000",
+      "productTypeRaw": "Campervan+Caravan",
+      "vehicleTypes": ["CAMPERVAN", "CARAVAN"],
+      "positioning": "MID",
+      "groupRanking": "#2 in the demo market"
+    },
+    {
+      "accountCode": "MOVARA",
+      "name": "Movara",
+      "accountType": "OEM_BRAND",
+      "parentCode": "TREVANO_GROUP",
+      "hqCountry": "France",
+      "annualProduction": "800",
+      "productTypeRaw": "Campervan",
+      "vehicleTypes": ["CAMPERVAN"],
+      "positioning": "MID",
+      "groupRanking": "#3 in the demo market"
+    },
+    {
+      "accountCode": "PLANET",
+      "name": "Planet",
+      "accountType": "OEM_BRAND",
+      "parentCode": "TREVANO_GROUP",
+      "hqCountry": "France",
+      "annualProduction": "3,000",
+      "productTypeRaw": "Motorhome",
+      "vehicleTypes": ["MOTORHOME"],
+      "positioning": "MID",
+      "groupRanking": "#3 in the demo market"
+    },
+    {
+      "accountCode": "CASTELLA",
+      "name": "Castella",
+      "accountType": "OEM_BRAND",
+      "parentCode": "TREVANO_GROUP",
+      "hqCountry": "France",
+      "annualProduction": "1,500",
+      "productTypeRaw": "A-Class Motorhome",
+      "vehicleTypes": ["A_CLASS", "MOTORHOME"],
+      "positioning": "HIGH",
+      "groupRanking": "#3 in the demo market"
+    },
+    {
+      "accountCode": "ISTRA",
+      "name": "Istra",
+      "accountType": "OEM_BRAND",
+      "parentCode": "ISTRA_MOBIL",
+      "hqCountry": "Slovenia",
+      "annualProduction": "6,000",
+      "productTypeRaw": "Motorhome+Caravan",
+      "vehicleTypes": ["MOTORHOME", "CARAVAN"],
+      "positioning": "MID",
+      "groupRanking": "#4 in the demo market"
+    },
+    {
+      "accountCode": "SEALIGHTS",
+      "name": "Sea Lights",
+      "accountType": "OEM_BRAND",
+      "parentCode": "ISTRA_MOBIL",
+      "hqCountry": "Slovenia",
+      "annualProduction": "1,200",
+      "productTypeRaw": "Motorhome",
+      "vehicleTypes": ["MOTORHOME"],
+      "positioning": "LOW",
+      "groupRanking": "#4 in the demo market"
+    },
+    {
+      "accountCode": "ROVENA",
+      "name": "Rovena",
+      "accountType": "OEM_BRAND",
+      "parentCode": null,
+      "hqCountry": "Slovenia",
+      "annualProduction": "500-700",
+      "productTypeRaw": "Campervan",
+      "vehicleTypes": ["CAMPERVAN"],
+      "positioning": "MID"
+    },
+    {
+      "accountCode": "FRANKEL",
+      "name": "Frankel",
+      "accountType": "OEM_BRAND",
+      "parentCode": null,
+      "hqCountry": "Germany",
+      "annualProduction": "1,200",
+      "productTypeRaw": "Motorhome",
+      "vehicleTypes": ["MOTORHOME"],
+      "positioning": "HIGH"
+    },
+    {
+      "accountCode": "NEUMEYER",
+      "name": "Neumeyer",
+      "accountType": "OEM_BRAND",
+      "parentCode": null,
+      "hqCountry": "Germany",
+      "annualProduction": "<300",
+      "productTypeRaw": "A-Class Motorhome",
+      "vehicleTypes": ["A_CLASS", "MOTORHOME"],
+      "positioning": "HIGH"
+    }
+  ],
+  "warnings": []
+}

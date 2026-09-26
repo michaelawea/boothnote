@@ -1,0 +1,262 @@
+{
+ "counts": {
+  "files": 24,
+  "skus": 6,
+  "bytes": 14532000
+ },
+ "doctypes": [
+  "Certification",
+  "Datasheet",
+  "UM"
+ ],
+ "skus": [
+  "VLB12100LFP-BT-G1",
+  "VLB12100LFP-M-G2",
+  "VLB12150-CIBUS-G1",
+  "VLC2430LINK-G1",
+  "VLHCP-C02W01-G1",
+  "VLI1220PCH-G1"
+ ],
+ "files": [
+  {
+   "path": "Datasheet/Battery/VLB12100LFP-BT-G1/EN/VLB12100LFP-BT-G1_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/Battery/VLB12100LFP-BT-G1/EN/VLB12100LFP-BT-G1_Datasheet_EN.pdf",
+   "name": "VLB12100LFP-BT-G1_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "Battery",
+   "sku": "VLB12100LFP-BT-G1",
+   "size": 180000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/Battery/VLB12100LFP-BT-G1/EN/VLB12100LFP-BT-G1_UM_12.8V 100Ah Standard Battery_EN.pdf",
+   "actual_path": "02-UM/Battery/VLB12100LFP-BT-G1/EN/VLB12100LFP-BT-G1_UM_12.8V 100Ah Standard Battery_EN.pdf",
+   "name": "VLB12100LFP-BT-G1_UM_12.8V 100Ah Standard Battery_EN.pdf",
+   "doctype": "UM",
+   "category": "Battery",
+   "sku": "VLB12100LFP-BT-G1",
+   "size": 217000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12100LFP-BT-G1/EU/VLB12100LFP-BT-G1_CE_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12100LFP-BT-G1/EU/VLB12100LFP-BT-G1_CE_DoC.pdf",
+   "name": "VLB12100LFP-BT-G1_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12100LFP-BT-G1",
+   "size": 254000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12100LFP-BT-G1/EU/VLB12100LFP-BT-G1_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12100LFP-BT-G1/EU/VLB12100LFP-BT-G1_UKCA_DoC.pdf",
+   "name": "VLB12100LFP-BT-G1_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12100LFP-BT-G1",
+   "size": 291000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Datasheet/Battery/VLB12100LFP-M-G2/EN/VLB12100LFP-M-G2_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/Battery/VLB12100LFP-M-G2/EN/VLB12100LFP-M-G2_Datasheet_EN.pdf",
+   "name": "VLB12100LFP-M-G2_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "Battery",
+   "sku": "VLB12100LFP-M-G2",
+   "size": 328000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/Battery/VLB12100LFP-M-G2/EN/VLB12100LFP-M-G2_UM_12.8V 100Ah Compact Battery_EN.pdf",
+   "actual_path": "02-UM/Battery/VLB12100LFP-M-G2/EN/VLB12100LFP-M-G2_UM_12.8V 100Ah Compact Battery_EN.pdf",
+   "name": "VLB12100LFP-M-G2_UM_12.8V 100Ah Compact Battery_EN.pdf",
+   "doctype": "UM",
+   "category": "Battery",
+   "sku": "VLB12100LFP-M-G2",
+   "size": 365000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12100LFP-M-G2/EU/VLB12100LFP-M-G2_CE_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12100LFP-M-G2/EU/VLB12100LFP-M-G2_CE_DoC.pdf",
+   "name": "VLB12100LFP-M-G2_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12100LFP-M-G2",
+   "size": 402000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12100LFP-M-G2/EU/VLB12100LFP-M-G2_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12100LFP-M-G2/EU/VLB12100LFP-M-G2_UKCA_DoC.pdf",
+   "name": "VLB12100LFP-M-G2_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12100LFP-M-G2",
+   "size": 439000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Datasheet/Battery/VLB12150-CIBUS-G1/EN/VLB12150-CIBUS-G1_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/Battery/VLB12150-CIBUS-G1/EN/VLB12150-CIBUS-G1_Datasheet_EN.pdf",
+   "name": "VLB12150-CIBUS-G1_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "Battery",
+   "sku": "VLB12150-CIBUS-G1",
+   "size": 476000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/Battery/VLB12150-CIBUS-G1/EN/VLB12150-CIBUS-G1_UM_12.8V 150Ah Pro CI-Bus Battery_EN.pdf",
+   "actual_path": "02-UM/Battery/VLB12150-CIBUS-G1/EN/VLB12150-CIBUS-G1_UM_12.8V 150Ah Pro CI-Bus Battery_EN.pdf",
+   "name": "VLB12150-CIBUS-G1_UM_12.8V 150Ah Pro CI-Bus Battery_EN.pdf",
+   "doctype": "UM",
+   "category": "Battery",
+   "sku": "VLB12150-CIBUS-G1",
+   "size": 513000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12150-CIBUS-G1/EU/VLB12150-CIBUS-G1_CE_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12150-CIBUS-G1/EU/VLB12150-CIBUS-G1_CE_DoC.pdf",
+   "name": "VLB12150-CIBUS-G1_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12150-CIBUS-G1",
+   "size": 550000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Battery/VLB12150-CIBUS-G1/EU/VLB12150-CIBUS-G1_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/Battery/VLB12150-CIBUS-G1/EU/VLB12150-CIBUS-G1_UKCA_DoC.pdf",
+   "name": "VLB12150-CIBUS-G1_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Battery",
+   "sku": "VLB12150-CIBUS-G1",
+   "size": 587000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Datasheet/Charge_Controller/VLC2430LINK-G1/EN/VLC2430LINK-G1_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/Charge_Controller/VLC2430LINK-G1/EN/VLC2430LINK-G1_Datasheet_EN.pdf",
+   "name": "VLC2430LINK-G1_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "Charge_Controller",
+   "sku": "VLC2430LINK-G1",
+   "size": 624000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/Charge_Controller/VLC2430LINK-G1/EN/VLC2430LINK-G1_UM_30A MPPT LINK Charge Controller_EN.pdf",
+   "actual_path": "02-UM/Charge_Controller/VLC2430LINK-G1/EN/VLC2430LINK-G1_UM_30A MPPT LINK Charge Controller_EN.pdf",
+   "name": "VLC2430LINK-G1_UM_30A MPPT LINK Charge Controller_EN.pdf",
+   "doctype": "UM",
+   "category": "Charge_Controller",
+   "sku": "VLC2430LINK-G1",
+   "size": 661000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Charge_Controller/VLC2430LINK-G1/EU/VLC2430LINK-G1_CE_DoC.pdf",
+   "actual_path": "03-Certification/Charge_Controller/VLC2430LINK-G1/EU/VLC2430LINK-G1_CE_DoC.pdf",
+   "name": "VLC2430LINK-G1_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Charge_Controller",
+   "sku": "VLC2430LINK-G1",
+   "size": 698000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Charge_Controller/VLC2430LINK-G1/EU/VLC2430LINK-G1_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/Charge_Controller/VLC2430LINK-G1/EU/VLC2430LINK-G1_UKCA_DoC.pdf",
+   "name": "VLC2430LINK-G1_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Charge_Controller",
+   "sku": "VLC2430LINK-G1",
+   "size": 735000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Datasheet/IoT_Smart/VLHCP-C02W01-G1/EN/VLHCP-C02W01-G1_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/IoT_Smart/VLHCP-C02W01-G1/EN/VLHCP-C02W01-G1_Datasheet_EN.pdf",
+   "name": "VLHCP-C02W01-G1_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "IoT_Smart",
+   "sku": "VLHCP-C02W01-G1",
+   "size": 772000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/IoT_Smart/VLHCP-C02W01-G1/EN/VLHCP-C02W01-G1_UM_LINK Smart Hub_EN.pdf",
+   "actual_path": "02-UM/IoT_Smart/VLHCP-C02W01-G1/EN/VLHCP-C02W01-G1_UM_LINK Smart Hub_EN.pdf",
+   "name": "VLHCP-C02W01-G1_UM_LINK Smart Hub_EN.pdf",
+   "doctype": "UM",
+   "category": "IoT_Smart",
+   "sku": "VLHCP-C02W01-G1",
+   "size": 809000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/IoT_Smart/VLHCP-C02W01-G1/EU/VLHCP-C02W01-G1_CE_DoC.pdf",
+   "actual_path": "03-Certification/IoT_Smart/VLHCP-C02W01-G1/EU/VLHCP-C02W01-G1_CE_DoC.pdf",
+   "name": "VLHCP-C02W01-G1_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "IoT_Smart",
+   "sku": "VLHCP-C02W01-G1",
+   "size": 846000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/IoT_Smart/VLHCP-C02W01-G1/EU/VLHCP-C02W01-G1_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/IoT_Smart/VLHCP-C02W01-G1/EU/VLHCP-C02W01-G1_UKCA_DoC.pdf",
+   "name": "VLHCP-C02W01-G1_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "IoT_Smart",
+   "sku": "VLHCP-C02W01-G1",
+   "size": 883000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Datasheet/Inverter/VLI1220PCH-G1/EN/VLI1220PCH-G1_Datasheet_EN.pdf",
+   "actual_path": "01-Datasheet/Inverter/VLI1220PCH-G1/EN/VLI1220PCH-G1_Datasheet_EN.pdf",
+   "name": "VLI1220PCH-G1_Datasheet_EN.pdf",
+   "doctype": "Datasheet",
+   "category": "Inverter",
+   "sku": "VLI1220PCH-G1",
+   "size": 920000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "UM/Inverter/VLI1220PCH-G1/EN/VLI1220PCH-G1_UM_2000W Inverter Charger_EN.pdf",
+   "actual_path": "02-UM/Inverter/VLI1220PCH-G1/EN/VLI1220PCH-G1_UM_2000W Inverter Charger_EN.pdf",
+   "name": "VLI1220PCH-G1_UM_2000W Inverter Charger_EN.pdf",
+   "doctype": "UM",
+   "category": "Inverter",
+   "sku": "VLI1220PCH-G1",
+   "size": 957000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Inverter/VLI1220PCH-G1/EU/VLI1220PCH-G1_CE_DoC.pdf",
+   "actual_path": "03-Certification/Inverter/VLI1220PCH-G1/EU/VLI1220PCH-G1_CE_DoC.pdf",
+   "name": "VLI1220PCH-G1_CE_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Inverter",
+   "sku": "VLI1220PCH-G1",
+   "size": 994000,
+   "modified": "2026-01-15T09:00:00Z"
+  },
+  {
+   "path": "Certification/Inverter/VLI1220PCH-G1/EU/VLI1220PCH-G1_UKCA_DoC.pdf",
+   "actual_path": "03-Certification/Inverter/VLI1220PCH-G1/EU/VLI1220PCH-G1_UKCA_DoC.pdf",
+   "name": "VLI1220PCH-G1_UKCA_DoC.pdf",
+   "doctype": "Certification",
+   "category": "Inverter",
+   "sku": "VLI1220PCH-G1",
+   "size": 1031000,
+   "modified": "2026-01-15T09:00:00Z"
+  }
+ ]
+}

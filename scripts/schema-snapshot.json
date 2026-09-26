@@ -1,0 +1,377 @@
+{
+  "objects": [
+    "contributor",
+    "intelItem",
+    "intelValue",
+    "product",
+    "productFitment",
+    "project",
+    "projectDoc",
+    "supplier",
+    "supportCase",
+    "visit",
+    "workItem"
+  ],
+  "fields": {
+    "company": {
+      "accountCode": "TEXT unique",
+      "accountType": "SELECT",
+      "annualProduction": "TEXT",
+      "chassisBrand": "TEXT",
+      "groupRanking": "TEXT",
+      "hqCountry": "TEXT",
+      "intelCompleteness": "NUMBER",
+      "missingIntel": "TEXT",
+      "nextAsk": "TEXT",
+      "parentCompany": "RELATION→company",
+      "positioning": "SELECT",
+      "productTypeRaw": "TEXT",
+      "productionSite": "TEXT",
+      "soldVia": "RELATION→company",
+      "vehicleTypes": "MULTI_SELECT",
+      "vehiclesSold2025": "NUMBER",
+      "vehiclesTarget2026": "NUMBER"
+    },
+    "contributor": {
+      "contributorType": "SELECT",
+      "isActive": "BOOLEAN",
+      "userCode": "TEXT unique"
+    },
+    "intelItem": {
+      "appliesTo": "SELECT",
+      "createdByAgent": "BOOLEAN",
+      "isEnabled": "BOOLEAN",
+      "itemKey": "TEXT unique",
+      "question": "TEXT",
+      "questionEn": "TEXT",
+      "requiredForStage": "SELECT",
+      "sourceInboxId": "TEXT",
+      "valueType": "SELECT",
+      "wave": "NUMBER",
+      "weight": "NUMBER"
+    },
+    "intelValue": {
+      "company": "RELATION→company",
+      "confidence": "SELECT",
+      "createdByAgent": "BOOLEAN",
+      "intelItem": "RELATION→intelItem",
+      "recordedAt": "DATE_TIME",
+      "recordedBy": "RELATION→contributor",
+      "sourceInboxId": "TEXT",
+      "sourceName": "TEXT",
+      "valueBoolean": "BOOLEAN",
+      "valueNumber": "NUMBER",
+      "valueText": "TEXT"
+    },
+    "opportunity": {
+      "annualDemand": "TEXT",
+      "category": "SELECT",
+      "demandBreakdown": "TEXT",
+      "dormantReason": "TEXT",
+      "intelCompleteness": "NUMBER",
+      "nextAsk": "TEXT",
+      "nextDecisionWindow": "DATE",
+      "originVisit": "RELATION→visit",
+      "ownerTeam": "TEXT",
+      "targetPrice": "TEXT"
+    },
+    "person": {
+      "contactRole": "SELECT"
+    },
+    "product": {
+      "category": "SELECT",
+      "productSummary": "TEXT",
+      "sku": "TEXT unique"
+    },
+    "productFitment": {
+      "category": "SELECT",
+      "company": "RELATION→company",
+      "confidence": "SELECT",
+      "fitmentType": "SELECT",
+      "integration": "SELECT",
+      "modelName": "TEXT",
+      "recordedAt": "DATE_TIME",
+      "recordedBy": "RELATION→contributor",
+      "sourceInboxId": "TEXT",
+      "sourceNote": "TEXT",
+      "supplier": "RELATION→supplier",
+      "visit": "RELATION→visit"
+    },
+    "project": {
+      "budget": "CURRENCY",
+      "company": "RELATION→company",
+      "openQuestions": "RICH_TEXT",
+      "opportunity": "RELATION→opportunity",
+      "ownerTeam": "TEXT",
+      "plannedSop": "DATE",
+      "primaryProductName": "TEXT",
+      "projectCode": "TEXT unique",
+      "projectStage": "SELECT",
+      "recordedBy": "RELATION→contributor",
+      "sampleQty": "NUMBER",
+      "sourceInboxId": "TEXT",
+      "specSummary": "RICH_TEXT"
+    },
+    "projectDoc": {
+      "attachmentId": "TEXT",
+      "company": "RELATION→company",
+      "content": "RICH_TEXT",
+      "docCode": "TEXT",
+      "docSource": "SELECT",
+      "generatedAt": "DATE_TIME",
+      "isBaseline": "BOOLEAN",
+      "project": "RELATION→project",
+      "recordedBy": "RELATION→contributor",
+      "reviewStatus": "SELECT",
+      "sourceInboxId": "TEXT",
+      "version": "TEXT",
+      "workItem": "RELATION→workItem"
+    },
+    "supplier": {
+      "categories": "MULTI_SELECT",
+      "supplierNote": "TEXT",
+      "website": "LINKS"
+    },
+    "supportCase": {
+      "affectedUnits": "NUMBER",
+      "caseStatus": "SELECT",
+      "company": "RELATION→company",
+      "deliveryBatch": "TEXT",
+      "firstResponseAt": "DATE_TIME",
+      "issueDescription": "RICH_TEXT",
+      "opportunity": "RELATION→opportunity",
+      "primaryProduct": "RELATION→product",
+      "recordedBy": "RELATION→contributor",
+      "reportedAt": "DATE_TIME",
+      "resolvedAt": "DATE_TIME",
+      "severity": "SELECT"
+    },
+    "visit": {
+      "company": "RELATION→company",
+      "endedAt": "DATE_TIME",
+      "location": "TEXT",
+      "parentVisit": "RELATION→visit",
+      "project": "RELATION→project",
+      "recordedBy": "RELATION→contributor",
+      "startedAt": "DATE_TIME",
+      "visitSummary": "TEXT",
+      "visitType": "SELECT"
+    },
+    "workItem": {
+      "blockedBy": "RELATION→workItem",
+      "blockedByCodes": "TEXT",
+      "body": "RICH_TEXT",
+      "company": "RELATION→company",
+      "customerDueDate": "DATE",
+      "dueDate": "DATE",
+      "followup": "RELATION→visit",
+      "itemCode": "TEXT unique",
+      "itemStatus": "SELECT",
+      "openQuestions": "TEXT",
+      "ownerRole": "TEXT",
+      "priority": "SELECT",
+      "project": "RELATION→project",
+      "recordedBy": "RELATION→contributor",
+      "sourceInboxId": "TEXT",
+      "threadType": "SELECT"
+    }
+  },
+  "enums": {
+    "company.accountType": [
+      "DEALER",
+      "DISTRIBUTOR",
+      "END_USER",
+      "OEM_BRAND",
+      "OEM_GROUP",
+      "OEM_SUB_GROUP",
+      "SUB_DEALER",
+      "SUB_DISTRIBUTOR"
+    ],
+    "company.positioning": [
+      "HIGH",
+      "LOW",
+      "MID"
+    ],
+    "company.vehicleTypes": [
+      "A_CLASS",
+      "B_CLASS",
+      "CAMPERVAN",
+      "CARAVAN",
+      "C_CLASS",
+      "MOTORHOME"
+    ],
+    "contributor.contributorType": [
+      "DEALER",
+      "DISTRIBUTOR",
+      "INTERNAL"
+    ],
+    "intelItem.appliesTo": [
+      "COMPANY",
+      "OPPORTUNITY"
+    ],
+    "intelItem.requiredForStage": [
+      "CONTACTED",
+      "DORMANT",
+      "MASS_PRODUCTION",
+      "NOMINATED",
+      "NOT_CONTACTED",
+      "RFQ_QUOTE",
+      "SAMPLE_TESTING",
+      "SOP",
+      "VEHICLE_VALIDATION"
+    ],
+    "intelItem.valueType": [
+      "BOOLEAN",
+      "NUMBER",
+      "RELATION",
+      "SELECT",
+      "TEXT"
+    ],
+    "intelValue.confidence": [
+      "CONFIRMED",
+      "LIKELY",
+      "RUMOR"
+    ],
+    "opportunity.category": [
+      "ACDC_CHARGER",
+      "BATTERY",
+      "BATTERY_CHARGER",
+      "DCDC_CHARGER",
+      "DISTRIBUTION_BOX",
+      "INVERTER",
+      "MONITOR_EIOT",
+      "SOLAR_PANEL"
+    ],
+    "opportunity.stage": [
+      "CONTACTED",
+      "DORMANT",
+      "MASS_PRODUCTION",
+      "NOMINATED",
+      "NOT_CONTACTED",
+      "RFQ_QUOTE",
+      "SAMPLE_TESTING",
+      "SOP",
+      "VEHICLE_VALIDATION"
+    ],
+    "person.contactRole": [
+      "DECISION_MAKER",
+      "OTHER",
+      "PURCHASING_LEAD",
+      "TECH_LEAD"
+    ],
+    "product.category": [
+      "ACDC_CHARGER",
+      "BATTERY",
+      "BATTERY_CHARGER",
+      "DCDC_CHARGER",
+      "DISTRIBUTION_BOX",
+      "INVERTER",
+      "MONITOR_EIOT",
+      "SOLAR_PANEL"
+    ],
+    "productFitment.category": [
+      "ACDC_CHARGER",
+      "BATTERY",
+      "BATTERY_CHARGER",
+      "DCDC_CHARGER",
+      "DISTRIBUTION_BOX",
+      "INVERTER",
+      "MONITOR_EIOT",
+      "SOLAR_PANEL"
+    ],
+    "productFitment.confidence": [
+      "CONFIRMED",
+      "LIKELY",
+      "RUMOR"
+    ],
+    "productFitment.fitmentType": [
+      "NONE",
+      "NO_BRAND",
+      "OPTION",
+      "STANDARD"
+    ],
+    "productFitment.integration": [
+      "CAN",
+      "CI_BUS",
+      "LIN",
+      "NONE",
+      "PROPRIETARY"
+    ],
+    "project.projectStage": [
+      "CONTACTED",
+      "DORMANT",
+      "MASS_PRODUCTION",
+      "NOMINATED",
+      "NOT_CONTACTED",
+      "RFQ_QUOTE",
+      "SAMPLE_TESTING",
+      "SOP",
+      "VEHICLE_VALIDATION"
+    ],
+    "projectDoc.docSource": [
+      "AGENT_GENERATED",
+      "CUSTOMER_ATTACHMENT",
+      "DICTATION",
+      "INTERNAL"
+    ],
+    "projectDoc.reviewStatus": [
+      "CUSTOMER_CONFIRMED",
+      "DRAFT",
+      "IN_REVIEW",
+      "SUPERSEDED"
+    ],
+    "supplier.categories": [
+      "ACDC_CHARGER",
+      "BATTERY",
+      "BATTERY_CHARGER",
+      "DCDC_CHARGER",
+      "DISTRIBUTION_BOX",
+      "INVERTER",
+      "MONITOR_EIOT",
+      "SOLAR_PANEL"
+    ],
+    "supportCase.caseStatus": [
+      "ACKNOWLEDGED",
+      "CLOSED",
+      "IN_PROGRESS",
+      "NEW",
+      "RESOLVED",
+      "WAITING_CUSTOMER"
+    ],
+    "supportCase.severity": [
+      "CRITICAL",
+      "HIGH",
+      "LOW",
+      "MEDIUM"
+    ],
+    "visit.visitType": [
+      "CALL",
+      "CUSTOMER_VISIT",
+      "ONLINE_MEETING",
+      "OTHER",
+      "PROJECT_FOLLOWUP",
+      "TRADE_SHOW"
+    ],
+    "workItem.itemStatus": [
+      "CANCELLED",
+      "DONE",
+      "IN_PROGRESS",
+      "OPEN",
+      "WAITING"
+    ],
+    "workItem.priority": [
+      "HIGH",
+      "LOW",
+      "MEDIUM",
+      "URGENT"
+    ],
+    "workItem.threadType": [
+      "DOC",
+      "HARDWARE",
+      "MILESTONE",
+      "OTHER",
+      "PROTOCOL",
+      "SOFTWARE"
+    ]
+  }
+}

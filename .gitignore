@@ -1,0 +1,65 @@
+# 密钥与本地配置 —— 绝不进版本库
+.env
+.env.local
+*.pem
+*.key
+
+# 备份产物（R13：pg_dump 落到这里，再推到欧盟区对象存储）
+backups/
+*.sql.gz
+
+# 依赖与构建产物（D29：Mac 上装的 darwin-arm64 依赖绝不能被 COPY 进 x86 容器）
+node_modules/
+dist/
+build/
+.next/
+__pycache__/
+*.pyc
+
+# 系统与编辑器
+.DS_Store
+.vscode/
+.idea/
+# Office 打开文件时留下的锁文件（gitignore 不支持行尾注释，所以单独一行）
+~$*
+
+# 大体积媒体：demo 的截图和 PPT 保留（它们是交付物），但不要收音频样本
+*.m4a
+*.webm
+*.wav
+
+# 录音数据绝不进仓库
+data/audio/
+
+# 🔴 定价资料绝不进仓库（D124）—— EU 分销价 FOB/DDP/MSRP。
+# 进去一次就**永远留在历史里**，而这个 skill 将来可能整个公开。
+# 它只存在于服务器的 data/ 下，靠 compose 的 `./data:/data-src:ro` 挂进容器，
+# 路径写在 `.env` 的 PRODUCT_PRICING_FILE。
+# ⚠️ 在这条规则之前，它是靠「没人跑过 git add -A」维持的 ——
+#    而这个仓库里 `git add -A` 是常规动作（2026-08-17 查过：历史干净，没漏出去）。
+data/*pricing*
+data/*price*
+
+# 转写评测用的基准音频（issue #15）。
+# 两个理由：① 它们可能带真实客户信息；② 二进制文件会把仓库撑大。
+# **`.expect.json` 要进仓库** —— 那才是「什么必须被听对」的约定，
+# 而它离开音频依然有意义（换一段音频重录，断言不变）。
+docs/test_example/audio/*
+!docs/test_example/audio/README.md
+!docs/test_example/audio/*.expect.json
+
+# Cloudflare Origin Certificate —— 私钥绝不进仓库
+infra/caddy/certs/*
+!infra/caddy/certs/README.md
+*.tsbuildinfo
+
+# 调试用的一次性脚本（_ 开头）。2026-08-04 有一个 _rollback.mjs 被 `git add -A` 误提交进来 ——
+# 它会 drop 掉 staging.attempts 列，留在仓库里迟早有人当成工具跑一下。
+services/gateway/_*.mjs
+scripts/_*.mjs
+
+# 部署时的数据快照（D79）—— 每次部署重新生成，不进版本库
+.data-guard.json
+
+# vite-plugin-pwa 的 devOptions 每次 `npm run dev` 都会重写它 —— 构建产物，不进仓库
+apps/capture-pwa/dev-dist/

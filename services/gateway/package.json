@@ -1,0 +1,30 @@
+{
+  "name": "boothnote-gateway",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Boothnote 网关 —— PWA 与 Twenty 之间的唯一写入闸门（§4.2 第1条）",
+  "scripts": {
+    "dev": "node --watch src/index.ts",
+    "start": "node src/index.ts",
+    "migrate": "node src/migrate.ts",
+    "adduser": "node src/cli-adduser.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'src/__tests__/*.test.ts'",
+    "test:integration": "node --test src/__tests__/api.test.ts",
+    "test:unit": "node --test src/__tests__/auth.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "0.83.0",
+    "@fastify/cors": "^10.0.1",
+    "@fastify/multipart": "^9.0.1",
+    "fastify": "^5.2.0",
+    "jose": "^5.9.6",
+    "officeparser": "5.1.1",
+    "postgres": "^3.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

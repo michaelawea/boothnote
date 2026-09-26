@@ -1,0 +1,91 @@
+# 两个子域名。
+#
+# 🔴 HTTPS 不是"以后再说"的事：**没有它 MediaRecorder 直接不可用**，
+#    手机上录不了音，C2 的第一幕当场归零（§4.5 坑 2 / R10）。
+#
+# ── TLS 三种模式，靠 SITE_SCHEME + TLS_DIRECTIVE 两个环境变量切换 ──
+#
+# 【F · Cloudflare Flexible —— 测试期在用】
+#     SITE_SCHEME=http://
+#     TLS_DIRECTIVE=
+#     Cloudflare 用 **明文 HTTP 回源**，源站不需要任何证书。
+#     🔴 `http://` 前缀必须有：不写的话 Caddy 会把 HTTP 跳到 HTTPS，
+#        而 Cloudflare 又用 HTTP 回源 → **无限重定向**（浏览器报 ERR_TOO_MANY_REDIRECTS）。
+#     ✅ 浏览器仍是 HTTPS，所以 `isSecureContext` 为 true，**MediaRecorder 照常可用**。
+#     ⚠️ 代价说清楚：Cloudflare↔源站那一段是明文，**登录密码、JWT、录音都在公网裸奔**。
+#        → 见 R16。真数据进来之前（展会前）必须切到模式 A。
+#
+# 【A · Cloudflare Full (strict) —— 正式期应该用这个】
+#     SITE_SCHEME=
+#     TLS_DIRECTIVE=tls /certs/origin.pem /certs/origin.key
+#     Cloudflare 后台签一张 **Origin Certificate**（15 年、免费）挂到 /certs。
+#     没有签发流程 → 没有 Let's Encrypt 限流、不依赖 DNS 生效时机、橙云照常开。
+#
+# 【B · 灰云 / 无 CDN】
+#     SITE_SCHEME=  且  TLS_DIRECTIVE=   （Caddy 自动走 Let's Encrypt）
+#     ⚠️ **橙云开着时必然失败** —— HTTP-01 校验请求打到 Cloudflare 边缘，到不了源站。
+
+{
+	email {$ACME_EMAIL}
+}
+
+# ── 写入端：PWA + 网关同源 ──────────────────────────────────────
+# 同源意味着零 CORS、零预检、JWT 是第一方 cookie/storage —— 少一整类问题。
+{$SITE_SCHEME}{$CAPTURE_DOMAIN} {
+	{$TLS_DIRECTIVE}
+	encode zstd gzip
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy gateway:4000
+	}
+
+	# ── 管理控制台 ────────────────────────────────────────────────
+	# 挂在一个不好猜的路径下（.env 的 ADMIN_PATH）。
+	# ⚠️ 路径只是降噪，**真正的门是 ADMIN_TOKEN**，走 X-Admin-Token 请求头。
+	#    令牌绝不放进 URL —— URL 会落进访问日志、Cloudflare 日志和浏览器历史。
+	# 默认值不能为空，否则 handle 会变成通配、吞掉整个站点。
+	handle {$ADMIN_PATH:/console}* {
+		uri replace {$ADMIN_PATH:/console} /admin
+		reverse_proxy gateway:4000
+	}
+
+	handle {
+		root * /srv/capture
+		# PWA 是单页应用：任何未知路径都回 index.html
+		try_files {path} /index.html
+		file_server
+
+		header {
+			# 麦克风必须显式放行，否则 getUserMedia 被 permissions policy 挡掉
+			Permissions-Policy "microphone=(self)"
+			X-Content-Type-Options "nosniff"
+			Referrer-Policy "strict-origin-when-cross-origin"
+		}
+		# Service Worker 必须每次校验，否则用户会卡在旧版本上。
+		#
+		# ⚠️ `/registerSW.js` 从 D83 起**不再产出**（`injectRegister: false`，
+		#    注册整个搬进 PWA 的 `src/update.ts`，只留一份实现）。这一行留着无害
+		#    —— 真正起作用的是 `/sw.js`。R17 那条 Cloudflare Cache Rule 同理，
+		#    里面还列着 `/registerSW.js`，不用去改。
+		# 🔴 但只做到「不缓存」是不够的：**服务器如实交出新版本 ≠ 手机会去问、会换过去。**
+		#    iOS 的桌面图标进去多数是「恢复」不是「加载」，客户端那半边见 §2.30 / D83。
+		@sw path /sw.js /registerSW.js
+		header @sw Cache-Control "no-cache"
+
+		# ⚠️ Cloudflare 橙云下还要在后台做三件事，Caddy 这边管不了：
+		#   1. 这个子域名关掉 **Rocket Loader** 与 **Auto Minify**
+		#      —— 它们会重排 <script>，能把 SPA 和 Service Worker 弄坏
+		#   2. 给 /sw.js 与 /registerSW.js 加一条 **Cache Rule: Bypass cache**
+		#      —— 否则边缘会缓存旧的 SW，用户卡在旧版本上，而且很难自查
+		#   3. 免费版上传上限 100 MB —— 90 秒音频约 1 MB，够用，但别忘了这条存在
+	}
+}
+
+# ── 内核台：Twenty。只有 维护者 / Lena 登录（D18）────────────
+{$SITE_SCHEME}{$CRM_DOMAIN} {
+	{$TLS_DIRECTIVE}
+	encode zstd gzip
+	reverse_proxy server:3000
+}
+

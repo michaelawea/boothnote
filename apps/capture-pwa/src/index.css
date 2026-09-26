@@ -1,0 +1,711 @@
+/**
+ * 基础样式。令牌与 src/theme.ts 一一对应 —— 两边都要改的时候别只改一边。
+ * 值的来源见 theme.ts 顶部：2026-08-02 在 chatgpt.com / openai.com 实测。
+ */
+:root {
+  --bg: #fcfcfc;
+  --surface: #fff;
+  --s2: #f9f9f9;
+  --s3: #f3f3f3;
+  --fill: rgba(0, 0, 0, 0.04);
+  --text: #0d0d0d;
+  --soft: #5d5d5d;
+  --light: rgba(0, 0, 0, 0.42);
+  --line: rgba(0, 0, 0, 0.1);
+  --line-l: rgba(0, 0, 0, 0.06);
+  --blue: #0b3587;
+  --red: #c0392b;
+  --green: #2fa361;
+  --warn: #b37e00;
+  --r: 16px;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: -apple-system, ui-sans-serif, system-ui, 'SF Pro Text', 'PingFang SC', 'Segoe UI',
+    sans-serif;
+  color: var(--text);
+  background: var(--bg);
+  overscroll-behavior-y: none;
+  -webkit-font-smoothing: antialiased;
+}
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 16px; /* < 16px 会让 iOS Safari 聚焦时自动放大页面 */
+  color: inherit;
+}
+button {
+  border: none;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+textarea,
+input,
+select {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  outline: none;
+  background: transparent;
+}
+
+/* ── 卡片 ────────────────────────────────────────────────────── */
+.card {
+  position: relative;
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line-l);
+  border-radius: var(--r);
+  padding: 15px 16px;
+  transition:
+    transform 0.18s cubic-bezier(0.2, 0.8, 0.3, 1),
+    box-shadow 0.18s ease,
+    border-color 0.18s ease;
+}
+@media (hover: hover) {
+  .card:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 20px -8px rgba(0, 0, 0, 0.12);
+    border-color: var(--line);
+  }
+}
+.card:active {
+  transform: translateY(0) scale(0.995);
+  box-shadow: none;
+}
+/* 左侧状态细条 —— 代替一堆彩色徽章 */
+.card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 14px;
+  bottom: 14px;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.2s ease;
+}
+.card[data-state='queued']::before {
+  background: var(--warn);
+}
+.card[data-state='syncing']::before {
+  background: var(--blue);
+}
+.card[data-state='failed']::before {
+  background: var(--red);
+}
+
+/* ── 控件：全胶囊 ────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 52px;
+  padding: 0 20px;
+  border-radius: 9999px;
+  font-size: 15px;
+  font-weight: 500;
+  background: var(--text);
+  color: #fff;
+  transition:
+    opacity 0.15s ease,
+    transform 0.12s ease;
+}
+.btn:active {
+  transform: scale(0.985);
+}
+.btn:disabled {
+  opacity: 0.35;
+}
+.btn.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  height: 44px;
+}
+.btn.sm {
+  height: 36px;
+  font-size: 14px;
+  padding: 0 15px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 13px;
+  border-radius: 9999px;
+  font-size: 13.5px;
+  font-weight: 500;
+  background: var(--fill);
+  color: var(--soft);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    border-color 0.16s ease;
+}
+.chip[data-on='true'] {
+  background: var(--text);
+  color: #fff;
+}
+.chip[data-suggest='true'] {
+  background: transparent;
+  color: var(--warn);
+  border: 1px dashed rgba(179, 126, 0, 0.4);
+}
+
+/* ── 麦克风 ──────────────────────────────────────────────────── */
+.mic {
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--text);
+  box-shadow: 0 8px 26px -10px rgba(0, 0, 0, 0.5);
+  transition:
+    transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1),
+    background 0.2s ease;
+}
+.mic:active {
+  transform: scale(0.94);
+}
+.mic[data-recording='true'] {
+  background: var(--red);
+}
+
+/* ── 底栏中间那个 AI 键 ──────────────────────────────────────── */
+.ai-key {
+  width: 46px;
+  height: 46px;
+  border-radius: 23px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  background: var(--blue);
+  box-shadow: 0 4px 14px -4px rgba(11, 53, 135, 0.55);
+  transition: transform 0.16s cubic-bezier(0.2, 0.8, 0.3, 1);
+}
+.ai-key:active {
+  transform: scale(0.92);
+}
+
+/* ── AI 全屏对话的展开动画 ───────────────────────────────────
+   从底栏那个键的位置放大铺满。**只用 transform + opacity** ——
+   动 width/height 会在 iPhone 上掉帧，展馆里那一下卡顿很明显。 */
+.sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  transform-origin: 50% calc(100% - 46px);
+  animation: sheet-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+
+/* ── 浮层开着时，外壳整个让开（D109 · 2026-08-11 真机实测）─────────
+   维护者 在手机上撞到的：点进速记详情之后，顶栏和底栏五个键**还在**，
+   把这一屏的返回键和底部那一排（修改 / 发给 AI / 删除）挡住了 ——
+   而且**点下去响应的是下层那个按钮**。他一直删不掉、改不掉数据就是这个。
+
+   🔴 **判据：光靠层级只能保证「看不见」，拿掉才能保证「点不着」。**
+   这个 bug 最贵的部分是后者 —— 看得见的按钮点下去响应的是别人，
+   而界面上一切正常，人只会以为功能坏了。
+
+   ⚠️ `!important` 是必须的：`.app-tabs` 的 `display:grid` 写在**内联样式**里
+   （和上面 ≥900px 那条收起底栏的规则同一个理由）。 */
+body[data-sheet='open'] .app-head,
+body[data-sheet='open'] .app-tabs {
+  display: none !important;
+}
+.sheet[data-closing='true'] {
+  animation: sheet-out 0.2s ease both;
+}
+@keyframes sheet-in {
+  from {
+    opacity: 0;
+    transform: scale(0.86) translateY(28px);
+  }
+}
+@keyframes sheet-out {
+  to {
+    opacity: 0;
+    transform: scale(0.9) translateY(20px);
+  }
+}
+
+/* ── 对话气泡 ────────────────────────────────────────────────── */
+.bubble {
+  max-width: 84%;
+  padding: 11px 15px;
+  border-radius: 20px;
+  font-size: 15.5px;
+  line-height: 1.62;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.bubble[data-role='user'] {
+  align-self: flex-end;
+  background: var(--s3);
+}
+.bubble[data-role='agent'] {
+  align-self: flex-start;
+  background: transparent;
+  padding-left: 0;
+}
+
+.composer {
+  position: relative;
+  border: 1px solid var(--line);
+  border-radius: 26px;
+  background: var(--surface);
+  padding: 8px 8px 8px 16px;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  box-shadow: 0 2px 10px -6px rgba(0, 0, 0, 0.18);
+}
+
+/* ── 正在转写：输入栏上沿一条来回跑的细线（D112 · 2026-08-11）─────────
+   维护者：「在转写加载的过程中，加一个稍微有点加载的动态……
+   我现在总感觉加载的时候没有那样一个加载反馈。」
+
+   🔴 反馈要出现在**人正看着的那个东西**上。转写这几秒里，人的眼睛在输入框 ——
+   他等的就是「字什么时候出现在这儿」。把动效放在别处（比如顶栏）等于没放。
+
+   ⚠️ `overflow: hidden` 只在忙的时候加：平时加着会把「+」菜单的阴影切掉。 */
+.composer[data-busy='true'] {
+  overflow: hidden;
+}
+.composer[data-busy='true']::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--blue), transparent);
+  animation: busy-sweep 1.15s linear infinite;
+}
+@keyframes busy-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* ── 动画 ────────────────────────────────────────────────────── */
+.fade-in {
+  animation: fade 0.24s ease both;
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+.dots span {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+  border-radius: 3px;
+  background: var(--light);
+  animation: blink 1.2s infinite;
+}
+.dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes blink {
+  0%,
+  60%,
+  100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+/* ══ 应用外壳 ══════════════════════════════════════════════════════
+   🔴 **这一段是「电脑端不友好」的全部解法，而且它不碰手机端一个像素。**（D77）
+
+   判据：**坏的是外壳，不是页面。** 四个页面（速记/客户/看板/我的）在窄列里
+   都是对的 —— 难受的是「底栏五键横跨 1568px」和「内容锁死 780 居中，两边各空 390」，
+   那是手机外壳套在桌面上的结果。
+
+   实现上刻意**不用任何 JS 分支**：侧栏和底栏两个都渲染进 DOM，靠下面这组
+   媒体查询二选一。这样手机端连一次条件渲染都不经过 ——
+   「保证不动手机端」不是靠我小心，是靠 900px 以下**根本没有新规则生效**。
+
+   ⚠️ `.app` / `.page-wrap` 的窄屏取值必须和原来的内联样式**逐条等价**
+   （原来是 `display:flex; flex-direction:column; height:100%; background:bg`
+   和 `max-width:780px; margin:0 auto`）。改这里之前先对一遍。 */
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+}
+.page-wrap {
+  max-width: 780px;
+  margin: 0 auto;
+}
+/* 侧栏在手机上根本不存在（display:none 连无障碍树都不进） */
+.app-side {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  /* 三个孩子（顶栏 / 内容 / 底栏）**位置全部显式写死**，不靠自动排布 ——
+     自动排布会在「底栏被 display:none 拿掉」时悄悄改变别人落在哪一格。 */
+  .app {
+    display: grid;
+    grid-template-columns: 248px 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .app-side {
+    grid-column: 1;
+    grid-row: 1 / -1;
+  }
+  .app-head {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .app-body {
+    grid-column: 2;
+    grid-row: 2;
+  }
+  /* 底栏是拇指的东西。有鼠标时它只是把五个键摊到一米宽 —— 收起来。
+     `!important` 是必须的：它的 `display:grid` 写在内联样式里，
+     而内联样式的优先级高于任何选择器。 */
+  .app-tabs {
+    display: none !important;
+  }
+
+  .app-side {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border-right: 1px solid var(--line-l);
+    background: var(--s2);
+    padding: 12px 10px calc(12px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+  }
+  .app-side-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px 14px;
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+  .app-side-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    color: var(--soft);
+    text-align: left;
+    transition: background 0.12s ease;
+  }
+  .app-side-item:hover {
+    background: var(--fill);
+  }
+  .app-side-item[aria-current='page'] {
+    background: var(--s3);
+    color: var(--text);
+    font-weight: 600;
+  }
+  .app-side-sep {
+    height: 1px;
+    background: var(--line-l);
+    margin: 10px 4px;
+  }
+  .app-side-foot {
+    margin-top: auto;
+    padding: 10px 10px 2px;
+    border-top: 1px solid var(--line-l);
+    font-size: 12px;
+    color: var(--light);
+    line-height: 1.6;
+  }
+
+  /* 内容放开。780 是为一只手定的宽度，鼠标+大屏时它只是在浪费两侧各 390px。
+     不放到满屏是因为一行文字超过 ~90 字符就难读了 —— 1180 是个折中。 */
+  .page-wrap {
+    max-width: 1180px;
+    padding: 0 6px;
+  }
+  /* 顶栏那一行要和内容**左边缘对齐**。
+     不对齐的话标题会飘在内容左上方一大截外（1568px 上差了近 200px），
+     看起来像是掉出来的一块 —— 手机上这个问题不存在，因为两者都是满宽。 */
+  /* 20px = `.page-wrap` 的 6 + 各页自己的 14。两个数任何一个变了，这里要跟。 */
+  .app-head-row {
+    max-width: 1180px;
+    margin: 0 auto;
+    width: 100%;
+    padding: 0 20px !important;
+  }
+  .sheet {
+    animation: fade 0.18s ease both;
+  }
+}
+
+/* 上传进度圈：拿不到总大小时整体转起来（见 components/ProgressRing.tsx） */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 历史对话抽屉：从左边推出来 ─────────────────────────────────
+   照 ChatGPT 的形态。原来是从顶部掉下来一块 —— 那既不像 ChatGPT，
+   也在手机上把正在读的对话顶掉了半屏。
+
+   手机：铺满整屏（单手够不到右上角，所以整屏更好点）
+   电脑：只占左边 300px，右边留着能看见对话本身，点空白处关掉 */
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, 0.3);
+  animation: fade 0.18s ease both;
+}
+.scrim[data-closing='true'] {
+  animation: fade 0.18s ease reverse both;
+}
+.drawer {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 51;
+  width: 100%;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 0 40px rgba(0, 0, 0, 0.16);
+  /* 只动 transform —— 动 width/left 会在 iPhone 上掉帧 */
+  animation: drawer-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+.drawer[data-closing='true'] {
+  animation: drawer-out 0.18s ease both;
+}
+@keyframes drawer-in {
+  from {
+    transform: translateX(-100%);
+  }
+}
+@keyframes drawer-out {
+  to {
+    transform: translateX(-100%);
+  }
+}
+@media (min-width: 900px) {
+  .drawer {
+    width: 300px;
+    border-right: 1px solid var(--line-l);
+  }
+}
+
+/* ── 底部弹层（PickSheet）──────────────────────────────────────
+   手册 P8/P18/P23 的「改一格」用它。和抽屉同一条判据：
+   只动 transform，不动 height —— 动高度在 iPhone 上会掉帧。 */
+@keyframes picksheet-up {
+  from {
+    transform: translateY(100%);
+  }
+}
+@keyframes picksheet-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+/* ── 长按一条消息：把它托起来（D103 · issue #31 · D107 修订）──────
+   照 ChatGPT 移动端：背景虚化，**被长按的那条留在原来的位置**，
+   动作贴着它显示。**它取代了原来那个从底部弹出的 PickSheet** ——
+   底部弹层把人的视线从消息拽到屏幕最下面，而这一下操作的对象
+   恰恰是那条消息本身。
+
+   🔴 2026-08-11 实测修订：**不要挪到屏幕中央**（维护者 原话「就放在原有的
+   位置上就好了」）。长按的对象就在手指底下 —— 那是这一屏上最确定的坐标，
+   挪走等于让人再找一次。虚化 + 动作贴着它，已经足够说明焦点是哪一条。
+
+   ⚠️ `backdrop-filter` 在 Safari 上要带 `-webkit-` 前缀（iPhone 是主力机型）。
+   ⚠️ 老 WebView 不支持时会**整个失效**（不是降级成半透明），
+      所以底色的 rgba 本身就得够压得住 —— 虚化是锦上添花，不是唯一的对比来源。 */
+.lift-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.24);
+  -webkit-backdrop-filter: blur(11px) saturate(120%);
+  backdrop-filter: blur(11px) saturate(120%);
+  animation: fade 0.16s ease both;
+}
+/* 气泡的拷贝：定位由 JS 按长按那一刻量到的 rect 给（原地不动）。
+   给底色和阴影，因为它现在浮在虚化背景上 —— 透明的 agent 气泡在那上面读不出来。 */
+.lift-bubble {
+  position: fixed;
+  max-width: none;
+  overflow-y: auto;
+  padding-left: 15px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px -14px rgba(0, 0, 0, 0.42);
+  animation: lift-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+@keyframes lift-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+/* 动作卡。分隔线用 border 而不是 gap —— iOS 上那一列动作是连在一起的一块 */
+.lift-menu {
+  position: fixed;
+  z-index: 1;
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  min-width: 208px;
+  animation: lift-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+.lift-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 13px 16px;
+  font-size: 15px;
+  text-align: left;
+  color: var(--text);
+}
+.lift-menu button + button {
+  border-top: 1px solid var(--line-l);
+}
+.lift-menu button:active {
+  background: var(--s3);
+}
+
+/* ── 输入栏左边那个「+」弹出来的菜单（D104 · issue #32）────────────
+   照 ChatGPT 移动端：平时输入栏只有「+ · 输入框 · 麦克风 · 发送」，
+   要加东西才展开。位置贴着「+」本身（绝对定位到它上方）。 */
+.plus-menu {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  min-width: 196px;
+  padding: 6px;
+  border-radius: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line-l);
+  box-shadow: 0 14px 40px -14px rgba(0, 0, 0, 0.34);
+  animation: plus-in 0.16s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+@keyframes plus-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.96);
+  }
+}
+.plus-menu button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: 15px;
+  text-align: left;
+  color: var(--text);
+}
+.plus-menu button:active {
+  background: var(--s3);
+}
+/* 图标那个圆底 —— 截图里 ChatGPT 就是这个形态，也顺带把点击目标撑大 */
+.plus-menu .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--fill);
+  color: var(--soft);
+  flex-shrink: 0;
+}
+
+/* ── 撤销条（D102 · issue #33）────────────────────────────────────
+   删掉之后浮在最上面。**z-index 要压过抽屉（51）**：删对话这件事就发生在
+   抽屉里，撤销按钮被它盖住等于没有。 */
+.undo-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  /* 抬到输入栏上面 —— 压在输入框上的话，人一边想撤销一边看不见自己在打什么
+     （2026-08-11 在 Chrome 里实测：它正好盖住 placeholder 那一行） */
+  bottom: calc(84px + env(safe-area-inset-bottom));
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  max-width: min(92vw, 460px);
+  padding: 11px 14px;
+  border-radius: 14px;
+  background: var(--text);
+  color: #fff;
+  font-size: 13px;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5);
+  animation: undo-in 0.2s cubic-bezier(0.2, 0.9, 0.25, 1) both;
+}
+@keyframes undo-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, 10px);
+  }
+}

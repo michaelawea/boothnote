@@ -1,0 +1,134 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一分支上新的 push 会取消还在跑的旧任务 —— 免得排队等一堆过时的结果
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── 零依赖的那些：类型 / 单元 / 构建。永远该绿。────────────────────
+  checks:
+    name: 类型 · 单元 · 构建
+    runs-on: ubuntu-latest
+    # ⚠️ 这些用例**一个都不发请求**，但 `env.ts` 是在 import 时就校验必填项的 ——
+    #    少一个，模块加载就抛，整个文件报 `test failed` 在第 1 行。
+    #    实测（2026-08-03）：这一档原来只跑 auth.test.ts（碰不到 env），
+    #    改成跑全部单元之后 agent / attachments 两个文件当场加载失败。
+    #    值全是占位串，**不需要任何 secret**。
+    env:
+      GATEWAY_JWT_SECRET: ci-only-not-a-real-secret
+      APP_DATABASE_URL: postgres://ci@127.0.0.1:5432/nowhere
+      SERVER_URL: http://127.0.0.1:9
+      TWENTY_API_KEY: ci-placeholder
+      OPENAI_API_KEY: ci-placeholder
+      GATEWAY_AUDIO_DIR: /tmp/boothnote-audio
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            apps/capture-pwa/package-lock.json
+            services/gateway/package-lock.json
+
+      - run: npm ci
+        working-directory: apps/capture-pwa
+      - run: npm ci
+        working-directory: services/gateway
+
+      # 🔴 **调脚本，不要在这里再抄一份文件清单。**
+      #
+      # 原来这一步写死 `node --test src/__tests__/auth.test.ts` ——
+      # 于是 `test.sh` 的单元档和 CI 各有一份清单，两份必然分叉。
+      # 2026-08-03 实测到的后果：`window.test.ts` 9 条断言写了两天，
+      # **本地钩子和 CI 都没跑过它**；新加的 `timeline.test.ts` 同理。
+      #
+      # 现在 CI 跑的和 `./scripts/test.sh`（pre-push 钩子跑的那个）
+      # **是同一条命令** —— 加测试文件只需要改一个地方。
+      - name: 类型 · 单元 · 构建（和 pre-push 钩子同一条命令）
+        run: ./scripts/test.sh unit
+
+  # ── 集成：真 Postgres + 真跑起来的网关。────────────────────────────
+  # 不需要任何 secret：Twenty 与 OpenAI 只用占位值 —— 这些用例不碰它们，
+  # 后台抽取失败只会把 staging 标 failed，不影响被测的断言。
+  integration:
+    name: 集成（真库 + 真网关）
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: postgres
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      APP_DATABASE_URL: postgres://postgres:ci@localhost:5432/boothnote
+      GATEWAY_JWT_SECRET: ci-only-not-a-real-secret
+      GATEWAY_PORT: '4000'
+      SERVER_URL: http://127.0.0.1:9   # 故意指向不通的地址：确认 Twenty 挂了也不该拖垮这些用例
+      TWENTY_API_KEY: ci-placeholder
+      OPENAI_API_KEY: ci-placeholder
+      GATEWAY_AUDIO_DIR: /tmp/boothnote-audio
+      # D85：转写自检要真发一次 HTTPS 请求，而这里的 key 是占位符 —— 必然红。
+      # 一条**天天红的横幅**会把人训练成无视红色，所以 CI 里关掉。生产上是开着的。
+      TRANSCRIBE_SELFTEST: '0'
+      # 🔴 管理台那一档（T82）**只有它非空才跑得到** —— 留空的话
+      #    `/admin/*` 15 条会全部 skip，而那是全系统唯一建账号的路径。
+      #    ⚠️ 不是 secret：这个值只对这一次一次性的 CI 网关有效。
+      ADMIN_TOKEN: ci-only-admin-token-not-a-secret
+      # 钉钉渠道那一档（T93）同理：留空 = 渠道 503 + 整档 skip
+      CHANNEL_DINGTALK_SECRET: ci-only-channel-secret-not-a-secret
+      # 实验室 agent（T94）**故意不设自己的 secret** —— 默认和上面那个共用，
+      # CI 要走的就是生产那条路径。
+      LAB_SYNC_WAIT_MS: '1000'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: services/gateway/package-lock.json
+      - run: npm ci
+        working-directory: services/gateway
+
+      # compose 的 initdb 在这里不会跑，手动建库
+      - name: 建 boothnote 库
+        run: PGPASSWORD=ci psql -h localhost -U postgres -c 'create database boothnote'
+
+      - name: 跑迁移
+        run: node src/migrate.ts
+        working-directory: services/gateway
+
+      - name: 起网关
+        run: |
+          node src/index.ts > /tmp/gateway.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:4000/health >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "网关没起来："; cat /tmp/gateway.log; exit 1
+        working-directory: services/gateway
+
+      # 🔴 串行，且 `api.test.ts` 排最后 —— 它末尾那条暴力破解用例会把 IP 锁 15 分钟
+      #    （锁在网关内存里，按 IP）。并行跑的话渠道档的 /admin 调用全变 429。
+      #    理由与 scripts/integration-stack.sh 里那段注释相同，改一处要同时改另一处。
+      - name: 集成测试
+        run: |
+          set +e
+          node --test src/__tests__/channels-api.test.ts src/__tests__/lab-api.test.ts; a=$?
+          node --test src/__tests__/api.test.ts;          b=$?
+          [ $a -eq 0 ] && [ $b -eq 0 ]
+        working-directory: services/gateway
+
+      - name: 失败时打网关日志
+        if: failure()
+        run: cat /tmp/gateway.log

@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "转写提示词里要喂给模型的行业词。**改这个文件不用发版**。",
+    "",
+    "为什么需要它：现场说得最多、也最容易被听错的是**协议名和型号**（CI-Bus 会变成 'sea bus'，",
+    "RV-C 会变成 'RB seat'）。只喂公司名是不够的。",
+    "",
+    "⚠️ 不要无限往里加 —— 实测偏置词的数量和效果不是单调关系，它更像噪声。",
+    "只放真的会出现的那些；加完拿真音频跑一次 `node scripts/stt-eval.mjs` 比对。",
+    "",
+    "Example terms for the RV-OEM vertical. Replace with your own industry's vocabulary."
+  ],
+
+  "protocols": ["CI-Bus", "RV-C", "CAN bus", "LIN bus", "NMEA 2000", "Modbus", "RS-485", "J1939"],
+
+  "orgs": ["CIVD", "Caravan Salon", "Düsseldorf", "ECWVTA", "TÜV"],
+
+  "products": [
+    "Core Hub",
+    "VLB12100LFP",
+    "VLB12150-CIBUS",
+    "VLC2430LINK",
+    "VLI1220PCH",
+    "DC-DC charger",
+    "MPPT",
+    "LiFePO4",
+    "BMS",
+    "shunt",
+    "inverter",
+    "shore power"
+  ],
+
+  "terms": [
+    "motorhome",
+    "campervan",
+    "caravan",
+    "coachbuilt",
+    "chassis",
+    "Aufbau",
+    "Wohnmobil",
+    "Wohnwagen",
+    "Reisemobil",
+    "Basisfahrzeug",
+    "SOP",
+    "OEM",
+    "aftermarket",
+    "homologation",
+    "nomination",
+    "RFQ"
+  ]
+}

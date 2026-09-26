@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# push 之前先跑一遍能跑的检查。
+#
+# 启用（每个 clone 一次）：
+#     git config core.hooksPath .githooks
+#
+# 只跑**零依赖**的那些（类型 / 单元 / 构建）——
+# 集成测试要 Postgres + 跑着的网关，不该因为 docker 没开就挡住一次正当的 push。
+# 那部分交给 CI（.github/workflows/ci.yml，每次 push 都会跑）。
+#
+# 真的赶时间可以 `git push --no-verify` 绕过 —— 但 CI 仍然会拦。
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+printf '\n\033[1m▸ pre-push：类型 · 单元 · 构建\033[0m\n'
+
+if ! ./scripts/test.sh unit; then
+  cat <<'EOS'
+
+🔴 检查没过，push 已中止。
+
+   修好再推，或者确认要跳过：
+       git push --no-verify
+   （CI 仍然会跑同一套，跳过只是把问题推后）
+
+EOS
+  exit 1
+fi
+
+printf '\033[32m▸ 通过，继续 push\033[0m\n'

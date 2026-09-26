@@ -1,0 +1,19 @@
+# 🔴 D29 的关键一条：Mac 上装的 darwin-arm64 依赖绝不能被 COPY 进 x86 容器。
+# 否则 esbuild / rollup / sharp 会在容器里报一个极难认的错。
+**/node_modules
+**/dist
+**/build
+**/.vite
+
+# 密钥永不进镜像（compose 通过 environment 注入）
+.env
+.env.*
+!.env.example
+
+.git
+.github
+data/
+backups/
+demo/shots
+**/.DS_Store
+**/*.log
