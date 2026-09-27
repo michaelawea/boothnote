@@ -196,3 +196,52 @@ export const IconShare = ({ size = 20 }: P) => (
     <path d="M5 14v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" />
   </svg>
 );
+
+/* ── 编辑器工具栏（D135）─────────────────────────────────────────
+   只画 `markdown.ts` 认得的那几种 —— 工具栏上每一个键插进去的东西，
+   在详情页和列表摘要里都必须渲染得出来。 */
+
+export const IconHeading = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <path d="M7 5v14M17 5v14M7 12h10" />
+  </svg>
+);
+
+export const IconBold = ({ size = 20 }: P) => (
+  <svg {...base(size)} strokeWidth={2.4}>
+    <path d="M7 5h5.5a3.5 3.5 0 0 1 0 7H7zM7 12h6.5a3.5 3.5 0 0 1 0 7H7z" />
+  </svg>
+);
+
+export const IconListBullet = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <path d="M10 6h10M10 12h10M10 18h10" />
+    <circle cx="5" cy="6" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="5" cy="12" r="1.1" fill="currentColor" stroke="none" />
+    <circle cx="5" cy="18" r="1.1" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+export const IconListNumber = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <path d="M10 6h10M10 12h10M10 18h10" />
+    <path d="M4 5l1.3-1V8.5" strokeWidth={1.4} />
+    <path d="M3.8 11a1.2 1.2 0 0 1 2.3.4c0 .9-2.3 1.6-2.3 3h2.4" strokeWidth={1.4} />
+  </svg>
+);
+
+export const IconListTask = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3.5" y="3.5" width="6" height="6" rx="1.5" />
+    <path d="M5.2 6.6l1.1 1.1 2-2.2" strokeWidth={1.5} />
+    <rect x="3.5" y="14.5" width="6" height="6" rx="1.5" />
+    <path d="M13 6.5h7M13 17.5h7" />
+  </svg>
+);
+
+export const IconQuote = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <path d="M5 5v14" strokeWidth={2.4} />
+    <path d="M10 8h10M10 12h10M10 16h6" />
+  </svg>
+);

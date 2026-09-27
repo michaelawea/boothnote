@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { T, fmtAgo, fmtDuration } from '../theme';
 import { db, myNotes, type LocalAttachment, type Note } from '../db';
@@ -28,6 +28,9 @@ import {
   IconStop,
 } from '../icons';
 import { NoteDetail } from './NoteDetail';
+import { NoteComposer } from './NoteComposer';
+import { browserStore, loadDraft, storeDraft } from '../draft';
+import { mdToPlain } from '../markdown';
 import { t } from '../i18n';
 import { setBusy } from '../update';
 
@@ -43,7 +46,13 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
   const session = useSession();
   const me = session?.user;
 
-  const [text, setText] = useState('');
+  /**
+   * 正文草稿。**快速输入框和「写一条」的编辑器共用这一份**（D135）——
+   * 编辑器只是把它摊大，收起来字还在这儿；存下来走同一个 `save()`。
+   *
+   * 初值从本地草稿里捞：iOS 回收后台页面时它是唯一还活着的一份（见 `draft.ts`）。
+   */
+  const [text, setText] = useState(() => (me ? loadDraft(browserStore(), me.userCode) : ''));
   const [atts, setAtts] = useState<LocalAttachment[]>([]);
   const [attErr, setAttErr] = useState('');
   /** 正在读字节 / 压图（几百毫秒到两三秒）—— 这段时间不能让人以为点了没反应 */
@@ -63,6 +72,8 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
    * 修改同步完了，这一屏全都不知道。存 id 就永远是最新那一份。
    */
   const [detailId, setDetailId] = useState<string | null>(null);
+  /** 「写一条」的编辑器开着没有（D135）。 */
+  const [composing, setComposing] = useState(false);
   /** 录音是被打断的（不是人按停的）—— 说一句，别让人以为是自己按错了（issue #28）。 */
   const [interrupted, setInterrupted] = useState<number | null>(null);
   useSyncTick(); // 上传进度一变就重渲染 —— 1.5 秒轮询会让进度圈看起来卡住
@@ -83,6 +94,27 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
     setBusy('capture', holding);
     return () => setBusy('capture', false);
   }, [holding]);
+
+  /**
+   * 快速框的高度跟着 `text` 走，不跟着 `onInput` 走（D135，和 D110 在对话页修的是同一个洞）。
+   * `onInput` 只覆盖「人在这个框里打字」那一条路；编辑器收起来、草稿从本地捞回来，
+   * 字都是**不经过键盘**进来的 —— 挂在 onInput 上的话，一整篇纪要挤在一行高的框里。
+   */
+  useLayoutEffect(() => {
+    const el = textarea.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [text]);
+
+  /**
+   * 草稿随手落进本地（D135）。上面那道闸挡的是**我们自己**的刷新；
+   * 系统把后台的 PWA 整个回收掉时它挡不住 —— 这一格挡的是那种。
+   * 存下来之后 `text` 变空，这一格跟着删掉。
+   */
+  useEffect(() => {
+    if (me) storeDraft(browserStore(), me.userCode, text);
+  }, [text, me?.userCode]);
 
   // 只读**自己的**（T30：同一台手机换人登录，别把上一个人的速记显示出来）
   useEffect(() => {
@@ -260,8 +292,12 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
           <BigAction
             icon={<IconNoteNew size={22} />}
             label={t('写一条')}
-            hint={t('打字')}
-            onClick={() => textarea.current?.focus()}
+            hint={t('打字 · 可排版')}
+            /**
+             * D135：点它不再只是把光标放进下面那个小框，而是打开编辑器
+             * （格式键 · 预览 · 附件 · 字数）。小框原样留着，给「一句话就完」的那种。
+             */
+            onClick={() => setComposing(true)}
           />
           <BigAction
             icon={<IconNoteMic size={22} />}
@@ -322,11 +358,6 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
           placeholder={t('写点什么…（支持 markdown）')}
           rows={1}
           style={{ flex: 1, resize: 'none', maxHeight: 160, lineHeight: 1.5, padding: '9px 0' }}
-          onInput={(e) => {
-            const el = e.currentTarget;
-            el.style.height = 'auto';
-            el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
-          }}
         />
         {/**
          * 🔴 这个键叫「存下来」，不叫「发送」（issue #16）。
@@ -336,15 +367,17 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
          * 交给 AI 是速记建好之后、在下面那张卡片上按的（D31：抽取是显式触发）。
          * 文字比图标准确，这一格值得多占几个像素。
          */}
+        {/* 图片还在处理时不许存（D135，理由见 NoteComposer 的 canSave）——
+            否则那张图处理完会落进已经清空的草稿，挂到下一条速记上 */}
         <button
           className="btn sm"
           style={{
-            background: hasDraft ? T.text : T.s3,
-            color: hasDraft ? '#fff' : T.textLight,
+            background: hasDraft && !attBusy ? T.text : T.s3,
+            color: hasDraft && !attBusy ? '#fff' : T.textLight,
             boxShadow: 'none',
             flexShrink: 0,
           }}
-          disabled={!hasDraft}
+          disabled={!hasDraft || attBusy}
           onClick={() => void save()}
         >
           {t('存下来')}
@@ -446,7 +479,8 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
                     whiteSpace: 'pre-wrap',
                   }}
                 >
-                  {bodyOf(n) ||
+                  {/* 摘要不画格式，但也不许露出 `##` `**` 这些符号（D135：编辑器让它们多起来了） */}
+                  {mdToPlain(bodyOf(n)) ||
                     (n.audioSeconds
                       ? n.sync === 'synced'
                         ? t('🎙 {a} 语音 · 正在转写…', { a: fmtDuration(n.audioSeconds) })
@@ -542,6 +576,20 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
        * 这一屏整个还挂着，所以滚动位置、正在打的草稿、**正在录的音**
        * 一个都不受影响。跳路由的话这三样全没了。
        */}
+      {composing && (
+        <NoteComposer
+          text={text}
+          onText={setText}
+          atts={atts}
+          onRemoveAtt={(i) => setAtts((cur) => cur.filter((_, j) => j !== i))}
+          attBusy={attBusy}
+          attErr={attErr}
+          onPick={pick}
+          onSave={() => save()}
+          onClose={() => setComposing(false)}
+        />
+      )}
+
       {detail && (
         <NoteDetail
           key={detail.id}

@@ -1,4 +1,5 @@
 import { T } from '../theme';
+import { parseLine, splitBold } from '../markdown';
 
 /**
  * **最小的 markdown 渲染。不引 markdown 库。**
@@ -9,8 +10,8 @@ import { T } from '../theme';
  * 而一个 markdown 解析器几十 KB 起 —— 展馆里是 4G，每一 KB 都要在人按下按钮
  * 之前下载完。issue #7 已经为一个 `**粗体**` 做过同样的取舍，结论一样。
  *
- * 认这几种，其余原样输出：
- *   `**粗体**` · `- 列表` / `· 列表` · `## 标题` · 空行分段
+ * 认哪几种写在 `markdown.ts` 里（D135 起那是唯一一份规则 —— 编辑器的预览、
+ * 速记列表的摘要、回车续列表都从那儿读）。这里只管「每一种长什么样」。
  *
  * ⚠️ **不认 HTML，也不认链接。** 输入里有 agent 生成的内容和客户附件的正文，
  * 那是**不可信来源** —— 认 HTML 就等于给了它一条注入路径，而这一屏
@@ -19,9 +20,24 @@ import { T } from '../theme';
 
 /** 行内：只认 `**粗体**`。和 Chat.tsx 里那个 `bold()` 是同一条规则。 */
 const inline = (s: string, key: string) =>
-  String(s ?? '')
-    .split(/\*\*(.+?)\*\*/g)
-    .map((part, i) => (i % 2 ? <b key={`${key}-${i}`}>{part}</b> : part));
+  splitBold(s).map((part, i) => (i % 2 ? <b key={`${key}-${i}`}>{part}</b> : part));
+
+/** 列表类的一行：左边一个记号，右边正文。三种列表共用，只有记号不同。 */
+const Marked = ({ mark, dim, children }: { mark: string; dim?: boolean; children: React.ReactNode }) => (
+  <div style={{ display: 'flex', gap: 7, paddingLeft: 2 }}>
+    <span style={{ color: T.textLight, flexShrink: 0, minWidth: 10, textAlign: 'center' }}>{mark}</span>
+    <span
+      style={{
+        flex: 1,
+        minWidth: 0,
+        color: dim ? T.textLight : undefined,
+        textDecoration: dim ? 'line-through' : undefined,
+      }}
+    >
+      {children}
+    </span>
+  </div>
+);
 
 export const MarkdownLite = ({
   text,
@@ -38,38 +54,48 @@ export const MarkdownLite = ({
   return (
     <div style={{ fontSize: 14.5, lineHeight: 1.65, wordBreak: 'break-word' }}>
       {lines.map((raw, i) => {
-        const line = raw.trimEnd();
-        if (!line.trim()) return <div key={i} style={{ height: 6 }} />;
-
-        // ## 标题
-        const h = line.match(/^(#{1,4})\s+(.*)$/);
-        if (h) {
-          return (
-            <div
-              key={i}
-              style={{
-                fontWeight: 600,
-                fontSize: h[1]!.length <= 2 ? 15 : 14.5,
-                margin: '6px 0 2px',
-              }}
-            >
-              {inline(h[2] ?? '', String(i))}
-            </div>
-          );
+        const l = parseLine(raw);
+        const k = String(i);
+        switch (l.kind) {
+          case 'blank':
+            return <div key={i} style={{ height: 6 }} />;
+          case 'h':
+            return (
+              <div key={i} style={{ fontWeight: 600, fontSize: l.level <= 2 ? 15 : 14.5, margin: '6px 0 2px' }}>
+                {inline(l.text, k)}
+              </div>
+            );
+          case 'task':
+            // 勾掉的那条淡一点 + 划线：一眼分得出「还欠着什么」
+            return (
+              <Marked key={i} mark={l.done ? '☑' : '☐'} dim={l.done}>
+                {inline(l.text, k)}
+              </Marked>
+            );
+          case 'li':
+            return (
+              <Marked key={i} mark="·">
+                {inline(l.text, k)}
+              </Marked>
+            );
+          case 'ol':
+            return (
+              <Marked key={i} mark={`${l.n}.`}>
+                {inline(l.text, k)}
+              </Marked>
+            );
+          case 'quote':
+            return (
+              <div
+                key={i}
+                style={{ borderLeft: `3px solid ${T.line}`, paddingLeft: 10, color: T.textSoft }}
+              >
+                {inline(l.text, k)}
+              </div>
+            );
+          default:
+            return <div key={i}>{inline(l.text, k)}</div>;
         }
-
-        // - 列表 / · 列表 / * 列表
-        const li = line.match(/^\s*[-*·]\s+(.*)$/);
-        if (li) {
-          return (
-            <div key={i} style={{ display: 'flex', gap: 7, paddingLeft: 2 }}>
-              <span style={{ color: T.textLight, flexShrink: 0 }}>·</span>
-              <span style={{ flex: 1, minWidth: 0 }}>{inline(li[1] ?? '', String(i))}</span>
-            </div>
-          );
-        }
-
-        return <div key={i}>{inline(line, String(i))}</div>;
       })}
       {truncated && <div style={{ color: T.textLight }}>…</div>}
     </div>

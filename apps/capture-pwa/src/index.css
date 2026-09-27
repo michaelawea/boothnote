@@ -257,6 +257,89 @@ body[data-sheet='open'] .app-tabs {
   }
 }
 
+/* ── 「写一条」的编辑器（D135）───────────────────────────────────
+   工具栏是 GitHub 的 `<markdown-toolbar>`，这里只管长相。
+   `.editor-col` 让顶栏 / 正文 / 工具栏在电脑上收成同一根 780px 的柱子 ——
+   一行字超过 ~90 个字符就难读了，而编辑器是这个应用里行最长的地方。 */
+.editor-col {
+  width: 100%;
+  max-width: 780px;
+  margin: 0 auto;
+}
+.editor-dock {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 5px 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.editor-dock::-webkit-scrollbar {
+  display: none;
+}
+.editor-tools,
+.editor-tools-inner {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+/* 预览时格式键没有对象可改 —— 灰掉而不是藏起来，免得工具栏一跳一跳 */
+.editor-tools[data-off='true'] {
+  opacity: 0.3;
+  pointer-events: none;
+}
+.editor-tool {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 38px;
+  border-radius: 10px;
+  color: var(--soft);
+  cursor: pointer;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.editor-tool:active {
+  background: var(--fill);
+  color: var(--text);
+}
+@media (hover: hover) {
+  .editor-tool:hover {
+    background: var(--fill);
+    color: var(--text);
+  }
+}
+.editor-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--line);
+  margin: 0 6px;
+  flex-shrink: 0;
+}
+/* 编辑 / 预览 两段式开关 */
+.seg {
+  display: inline-flex;
+  padding: 3px;
+  border-radius: 9999px;
+  background: var(--fill);
+}
+.seg > button {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: var(--soft);
+}
+.seg > button[data-on='true'] {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
 /* ── 对话气泡 ────────────────────────────────────────────────── */
 .bubble {
   max-width: 84%;

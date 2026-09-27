@@ -764,6 +764,21 @@ const EN: Record<string, string> = {
     'This recording will not be saved — save it to Capture to keep it.',
   '知道了': 'Got it',
   '正在把这段 {a} 转成文字…': 'Transcribing this {a}…',
+
+  // ── 「写一条」的编辑器（D135）──────────────────────────────────
+  '打字 · 可排版': 'Keyboard · formatting',
+  预览: 'Preview',
+  标题: 'Heading',
+  粗体: 'Bold',
+  列表: 'Bulleted list',
+  编号列表: 'Numbered list',
+  待办: 'To-do',
+  引用: 'Quote',
+  '{a} 字': '{a} chars',
+  '从这里开始写…\n\n下面那一排可以加标题、列表、待办。收起不会丢 —— 字会留在快速输入框里。':
+    'Start writing…\n\nThe bar below adds headings, lists and to-dos. Collapsing loses nothing — the text stays in the quick box.',
+  '（还没写内容）': '(Nothing written yet)',
+  '存下来之后，详情页里就是这个样子。': 'This is how it will look in the note details once saved.',
 };
 
 /** 当前语言。**从登录态取** —— 服务端的 `app_user.locale` 是真相源。 */
