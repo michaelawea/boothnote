@@ -173,6 +173,15 @@ select {
   border: 1px dashed rgba(179, 126, 0, 0.4);
 }
 
+/* 速记页的快捷工具栏（D136）：工具多了横向滑，滚动条藏掉 ——
+   手机上它本来就不显示，桌面上一条灰杠会让这一行看起来像个表格 */
+.hotbar {
+  scrollbar-width: none;
+}
+.hotbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* ── 麦克风 ──────────────────────────────────────────────────── */
 .mic {
   width: 76px;

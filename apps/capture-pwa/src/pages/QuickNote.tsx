@@ -28,6 +28,7 @@ import {
   IconStop,
 } from '../icons';
 import { NoteDetail } from './NoteDetail';
+import { QuickTools } from '../components/QuickTools';
 import { NoteComposer } from './NoteComposer';
 import { browserStore, loadDraft, storeDraft } from '../draft';
 import { mdToPlain } from '../markdown';
@@ -406,6 +407,9 @@ export const QuickNotePage = ({ onOpenChat }: { onOpenChat?: (threadId: string) 
         </div>
       )}
       {attErr && <div style={{ color: T.amber, fontSize: 12.5, marginBottom: 12 }}>{attErr}</div>}
+
+      {/* ── 快捷工具（D136）：跟着时期走，没有在期的工具时整栏不画 ── */}
+      <QuickTools />
 
       {/* ── 我的速记 ─────────────────────────────────────────── */}
       <div style={{ fontSize: 12.5, color: T.textSoft, margin: '14px 0 8px' }}>

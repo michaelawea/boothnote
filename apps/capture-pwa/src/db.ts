@@ -284,6 +284,30 @@ export type EnumSet = {
   accountType: EnumOption[];
 };
 
+/**
+ * 一份 2C 问卷（D138）。**和速记分开放**：它不进 inbox、不走 agent，
+ * 上传去的是 `POST /surveys`，网关直接写进 Twenty。
+ *
+ * `id` 就是幂等键（网关的 `client_id`），断网重传不会多出一位客户。
+ * 答案存题目/选项 id（`survey.ts`），不存文字 —— 换语言、改措辞都不影响统计。
+ */
+export type LocalSurvey = {
+  id: string;
+  surveyKey: string;
+  answers: Record<string, unknown>;
+  /**
+   * 姓名 / 电话 / 邮箱 / 邮编。**传上去之后本地就清掉**（R20）：
+   * 服务端已经有了，手机丢了不该连带一串消费者的电话。答案留着，给「今天几份」数数。
+   */
+  contact?: { name?: string; email?: string; phone?: string; postcode?: string };
+  consentAt?: string;
+  createdAt: number;
+  recordedBy: string;
+  sync: SyncState;
+  attempts: number;
+  lastError?: string;
+};
+
 class CaptureDb extends Dexie {
   notes!: Table<Note, string>;
   companies!: Table<Company, string>;
@@ -291,6 +315,7 @@ class CaptureDb extends Dexie {
   threads!: Table<Thread, string>;
   enums!: Table<EnumSet, string>;
   records!: Table<RecordRow, string>;
+  surveys!: Table<LocalSurvey, string>;
 
   constructor() {
     super('boothnote-capture');
@@ -384,6 +409,20 @@ class CaptureDb extends Dexie {
       enums: 'id',
       records: 'id, captured_at, status',
     });
+    /**
+     * v10：2C 问卷（D138）。读它的地方是 `.where('sync')`（补传）和
+     * `.where('recordedBy')`（只数自己的，T30）—— **两个都在索引里**
+     * （v2 / v7 / v8 / v9 那四次的教训）。
+     */
+    this.version(10).stores({
+      notes: 'id, sync, createdAt, companyCode, recordedBy, threadId, stagingId, editedAt',
+      companies: 'id, code, name',
+      staging: 'id, status, created_at',
+      threads: 'id, last_message_at',
+      enums: 'id',
+      records: 'id, captured_at, status',
+      surveys: 'id, sync, createdAt, recordedBy',
+    });
   }
 }
 
@@ -406,3 +445,7 @@ export const countBySync = async (state: SyncState, userCode?: string) =>
   userCode
     ? myNotes(userCode).and((n) => n.sync === state).count()
     : db.notes.where('sync').equals(state).count();
+
+/** 同 `myNotes`：**只读自己的**（T30 —— 一台手机两个人用）。 */
+export const mySurveys = (userCode: string | undefined) =>
+  db.surveys.where('recordedBy').equals(userCode ?? '\u0000never');

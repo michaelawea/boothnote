@@ -59,6 +59,7 @@ import {
   startConfirmTicker,
 } from './confirm.ts';
 import { computeGaps } from './gaps.ts';
+import { registerSurveys, resumeSurveys, startSurveyTicker, surveyHealth } from './surveys.ts';
 import {
   createCompany,
   findOpportunity,
@@ -116,7 +117,12 @@ const requireAuth = async (req: any, reply: any) => {
 app.get('/health', async () => ({ ok: true, at: new Date().toISOString() }));
 
 /** agent 的健康。冒烟脚本盯着它 —— 队列积压是「等你发现时已经影响所有人」的那类问题。 */
-app.get('/agent/health', async () => ({ ...agentHealth(), channels: channelStatus() }));
+app.get('/agent/health', async () => ({
+  ...agentHealth(),
+  channels: channelStatus(),
+  // 2C 问卷进不去 Twenty 时（多半是 schema 没 provision），这一格是唯一看得见的地方（D138）
+  surveys: await surveyHealth().catch(() => null),
+}));
 
 // ── 登录 ────────────────────────────────────────────────────────
 app.post('/auth/login', async (req, reply) => {
@@ -1790,6 +1796,8 @@ registerAdmin(app);
 registerChannels(app);
 // ── 实验室 agent（T94）：群里的第二个 bot，独立 secret、空工具表。──
 registerLabChannel(app);
+// ── 2C 问卷（D138）：不走 agent，网关直接写 Twenty。──
+registerSurveys(app, requireAuth);
 
 warnIfColumnSwitchOn();
 /**
@@ -1802,6 +1810,8 @@ await reapStaleRuns();
 await resumePending();
 await resumeConfirming();
 startConfirmTicker();
+await resumeSurveys();
+startSurveyTicker();
 startChannelTicker();
 await app.listen({ port: env.port, host: '0.0.0.0' });
 console.log(`\n🚪 网关 http://localhost:${env.port}`);

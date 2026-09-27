@@ -25,6 +25,7 @@ export const SIDEBAR = [
   'contributor',  // 录入人 —— 「情报是谁报的」
   'project',      // 项目 —— D59 定点之后的执行体
   'workItem',     // 任务线程 —— D59
+  'consumerSurvey', // 2C 问卷 —— D138，问卷统计就在这一屏（按选项分组 / 筛选 / 导出）
 ];
 
 /**

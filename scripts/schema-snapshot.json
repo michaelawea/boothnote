@@ -1,5 +1,6 @@
 {
   "objects": [
+    "consumerSurvey",
     "contributor",
     "intelItem",
     "intelValue",
@@ -31,6 +32,25 @@
       "vehicleTypes": "MULTI_SELECT",
       "vehiclesSold2025": "NUMBER",
       "vehiclesTarget2026": "NUMBER"
+    },
+    "consumerSurvey": {
+      "appliancesInUse": "MULTI_SELECT",
+      "appliancesWanted": "MULTI_SELECT",
+      "brandChooser": "SELECT",
+      "campingPain": "TEXT",
+      "clientId": "TEXT unique",
+      "company": "RELATION→company",
+      "consentAt": "DATE_TIME",
+      "contactEmail": "TEXT",
+      "contactPhone": "TEXT",
+      "equipment": "MULTI_SELECT",
+      "eventName": "TEXT",
+      "installPreference": "SELECT",
+      "overnight": "MULTI_SELECT",
+      "postcode": "TEXT",
+      "recordedBy": "RELATION→contributor",
+      "surveyedAt": "DATE_TIME",
+      "wish": "TEXT"
     },
     "contributor": {
       "contributorType": "SELECT",
@@ -199,6 +219,48 @@
       "CARAVAN",
       "C_CLASS",
       "MOTORHOME"
+    ],
+    "consumerSurvey.appliancesInUse": [
+      "AC",
+      "COFFEE",
+      "EBIKE",
+      "FRIDGE",
+      "HAIRDRYER",
+      "HOB",
+      "LAPTOP",
+      "MICROWAVE",
+      "TV"
+    ],
+    "consumerSurvey.appliancesWanted": [
+      "AC",
+      "COFFEE",
+      "EBIKE",
+      "FRIDGE",
+      "HAIRDRYER",
+      "HOB",
+      "LAPTOP",
+      "MICROWAVE",
+      "TV"
+    ],
+    "consumerSurvey.brandChooser": [
+      "INSTALLER",
+      "ME"
+    ],
+    "consumerSurvey.equipment": [
+      "DCDC",
+      "INVERTER",
+      "LITHIUM",
+      "NONE",
+      "SOLAR"
+    ],
+    "consumerSurvey.installPreference": [
+      "DIY",
+      "PRO"
+    ],
+    "consumerSurvey.overnight": [
+      "AIRE",
+      "AUTONOMY",
+      "CAMPING"
     ],
     "contributor.contributorType": [
       "DEALER",

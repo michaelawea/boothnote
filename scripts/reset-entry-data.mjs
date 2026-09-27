@@ -144,6 +144,7 @@ const WIPE = [
   ['supportCases',    '售后问题'],
   ['visits',          '拜访/事件'],
   ['opportunities',   '商机'],
+  ['consumerSurveys', '2C 问卷'],   // D138 —— 答卷的人本身是「名单外的客户」，下面那一步一起删
   // 🔴 **Timeline 事件不在这里删。**
   //    库里那 3600 条里混着 Twenty 自己给 56 家客户写的 `company.created` ——
   //    一刀切会把要保留的那批客户自己的历史一起削掉。
@@ -312,7 +313,7 @@ const afterDb = await countBoothnote(sql);
 for (const t of TABLES) {
   if (afterDb[t] !== 0) bad.push(`boothnote.${t} 还剩 ${afterDb[t]} 行`);
 }
-line(`  ${Object.values(afterDb).every((n) => n === 0) ? c.g('✓') : c.r('✗')} boothnote 八张表`);
+line(`  ${Object.values(afterDb).every((n) => n === 0) ? c.g('✓') : c.r("✗")} boothnote ${TABLES.length} 张表`);
 
 if (bad.length) {
   line(`\n${c.r('🔴 没清干净：')}\n${bad.map((b) => `   · ${b}`).join('\n')}\n`);

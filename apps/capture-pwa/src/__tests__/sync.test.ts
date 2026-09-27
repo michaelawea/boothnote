@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // 纯类型导入，编译后完全消失 —— 不会在桩就位之前把 db.ts 拉起来
-import type { Note } from '../db';
+import type { LocalSurvey, Note } from '../db';
 
 /**
  * 离线补传 —— **三段解耦的第一段**（T81）。
@@ -151,7 +151,7 @@ for (const [name, impl] of Object.entries({
 
 const { db } = await import('../db');
 const { login } = await import('../auth');
-const { flush, flushEdits, pullInbox, resetStuckUploads } = await import('../sync');
+const { flush, flushEdits, flushSurveys, pullInbox, resetStuckUploads } = await import('../sync');
 
 // ══════════════════════════════════════════════════════════════════
 //  夹具
@@ -791,5 +791,113 @@ describe('⑦ 拉回来的东西不许盖掉本地更新的那份', () => {
     expect(await pullInbox()).toBe(0);
     expect(fetched).toHaveLength(0);
     expect((await got('x1')).text).toBe('本地的');
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  ⑧ 2C 问卷的上传队列（D138）—— 和速记同一套规矩
+// ══════════════════════════════════════════════════════════════════
+
+describe('⑧ 2C 问卷：离线落库 → 回网补传，失败不丢、登录失效不烧次数', () => {
+  const addSurvey = (x: Partial<LocalSurvey> & { id: string }) =>
+    db.surveys.add({
+      surveyKey: 'vdl2026',
+      answers: { equipment: ['solar'], appliances: { fridge: 'have' } },
+      contact: { name: 'Jean Dupont', phone: '0612345678' },
+      consentAt: '2026-09-27T10:00:00.000Z',
+      createdAt: 1_700_000_000_000,
+      recordedBy: 'tester',
+      sync: 'queued',
+      attempts: 0,
+      ...x,
+    } as LocalSurvey);
+  const gotS = (id: string) => db.surveys.get(id) as Promise<LocalSurvey>;
+  const bodies: Array<Record<string, any>> = [];
+
+  beforeEach(async () => {
+    await db.surveys.clear();
+    bodies.length = 0;
+  });
+  /** 只拦 /surveys，别的请求照旧 200 */
+  const gateway = (status: number) => {
+    onFetch = (url, init) => {
+      if (url.endsWith('/surveys')) bodies.push(JSON.parse(String(init?.body)));
+      return { status, body: status < 300 ? { id: 'srv', status: 'pending' } : { error: 'x' } };
+    };
+  };
+
+  it('离线时一个请求都不发，也不计次数', async () => {
+    await addSurvey({ id: 's1' });
+    nav.onLine = false;
+    await flushSurveys();
+    expect(fetched).toHaveLength(0);
+    expect(await gotS('s1')).toMatchObject({ sync: 'queued', attempts: 0 });
+  });
+
+  it('传成功：标 synced，**本地的联系方式清掉**，答案留着；发出去的就是那一份', async () => {
+    await addSurvey({ id: 's1' });
+    gateway(201);
+    await flushSurveys();
+
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0]).toMatchObject({
+      clientId: 's1', // 幂等键 = 本地 id
+      surveyKey: 'vdl2026',
+      answers: { equipment: ['solar'], appliances: { fridge: 'have' } },
+      contact: { name: 'Jean Dupont', phone: '0612345678' },
+      consentAt: '2026-09-27T10:00:00.000Z',
+      createdAt: 1_700_000_000_000,
+    });
+    const s = await gotS('s1');
+    expect(s.sync).toBe('synced');
+    expect(s.contact).toBeUndefined();
+    expect(s.answers).toEqual({ equipment: ['solar'], appliances: { fridge: 'have' } });
+  });
+
+  it('重复交（网关回 200 duplicate）也算成功', async () => {
+    await addSurvey({ id: 's1' });
+    gateway(200);
+    await flushSurveys();
+    expect((await gotS('s1')).sync).toBe('synced');
+  });
+
+  it('🔴 网关回 500：只加次数，答案和联系方式一个字不动', async () => {
+    await addSurvey({ id: 's1' });
+    const before = await gotS('s1');
+    gateway(500);
+    await flushSurveys();
+
+    const after = await gotS('s1');
+    expect(after).toMatchObject({ sync: 'failed', attempts: 1 });
+    expect(after.answers).toEqual(before.answers);
+    expect(after.contact).toEqual(before.contact);
+    expect(after.lastError).toContain('500');
+  });
+
+  it('🔴 401：保持 queued、不计次数，后面的也不再试', async () => {
+    await addSurvey({ id: 's1', createdAt: 1 });
+    await addSurvey({ id: 's2', createdAt: 2 });
+    gateway(401);
+    await flushSurveys();
+
+    expect(bodies).toHaveLength(1);
+    expect(await gotS('s1')).toMatchObject({ sync: 'queued', attempts: 0 });
+    expect(await gotS('s2')).toMatchObject({ sync: 'queued', attempts: 0 });
+  });
+
+  it('卡在 syncing 的问卷启动时掰回 queued —— 否则它既不重传也不进「待传 N」', async () => {
+    await addSurvey({ id: 's1', sync: 'syncing' });
+    expect(await resetStuckUploads()).toBe(1);
+    expect((await gotS('s1')).sync).toBe('queued');
+  });
+
+  it('攒够 8 次失败后自动不再试，人点了照样试一次', async () => {
+    await addSurvey({ id: 's1', sync: 'failed', attempts: 8 });
+    gateway(201);
+    await flushSurveys();
+    expect(bodies).toHaveLength(0);
+    await flushSurveys({ manual: true });
+    expect(bodies).toHaveLength(1);
+    expect((await gotS('s1')).sync).toBe('synced');
   });
 });

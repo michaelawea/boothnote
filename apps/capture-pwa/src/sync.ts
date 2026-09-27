@@ -199,6 +199,60 @@ export const flush = async ({ manual = false } = {}): Promise<void> => {
 };
 
 /**
+ * 2C 问卷的上传队列（D138）。和速记**同一套规矩**，只是发的是一个 JSON：
+ *   · 离线 / 没登录不发，不计次数
+ *   · 401 保持 queued、不烧重试次数（重新登录后自动补传）
+ *   · 失败只加次数，**数据一个字不动**
+ *   · 网关按 `id` 幂等 —— 重传不会多出一位客户
+ * 传成功之后清掉本地的联系方式（服务端已经有了，R20）。
+ */
+let surveysRunning = false;
+export const flushSurveys = async ({ manual = false } = {}): Promise<void> => {
+  if (surveysRunning || !navigator.onLine || !getSession()) return;
+  surveysRunning = true;
+  try {
+    const queued = await db.surveys.where('sync').anyOf('queued', 'failed', 'syncing').sortBy('createdAt');
+    for (const s of queued) {
+      if (!shouldUpload(s, { manual })) continue;
+      if (manual && s.attempts) await db.surveys.update(s.id, { attempts: 0 });
+      await db.surveys.update(s.id, { sync: 'syncing' });
+      emit();
+      try {
+        const res = await authFetch('/surveys', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clientId: s.id,
+            surveyKey: s.surveyKey,
+            answers: s.answers,
+            contact: s.contact ?? {},
+            consentAt: s.consentAt ?? null,
+            createdAt: s.createdAt,
+          }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status} ${(await res.text()).slice(0, 120)}`);
+        await db.surveys.update(s.id, { sync: 'synced', contact: undefined, lastError: undefined });
+      } catch (e) {
+        if (e instanceof AuthError) {
+          await db.surveys.update(s.id, { sync: 'queued', lastError: e.message });
+          emit();
+          break;
+        }
+        await db.surveys.update(s.id, {
+          sync: 'failed',
+          attempts: s.attempts + 1,
+          lastError: (e as Error).message,
+        });
+      }
+      emit();
+    }
+  } finally {
+    surveysRunning = false;
+    emit();
+  }
+};
+
+/**
  * 把「人改过的正文」推上去（issue #15/#16）。
  *
  * 🔴 **和上传队列分开跑，不复用 `sync` 状态。**
@@ -410,6 +464,7 @@ export const pullInbox = async (): Promise<number> => {
  */
 const syncBoth = async () => {
   await flush();
+  await flushSurveys();
   await flushEdits();
   await pullInbox();
 };
@@ -424,11 +479,15 @@ const syncBoth = async () => {
 export const resetStuckUploads = async (): Promise<number> => {
   const stuck = await db.notes.where('sync').equals('syncing').toArray();
   for (const n of stuck) await db.notes.update(n.id, { sync: 'queued' });
-  if (stuck.length) {
-    console.warn(`[sync] 掰回 ${stuck.length} 条卡在上传中的速记`);
+  // 问卷同理（D138）—— 卡在 syncing 的既不会重传、也不进「待传 N」
+  const stuckSurveys = await db.surveys.where('sync').equals('syncing').toArray();
+  for (const x of stuckSurveys) await db.surveys.update(x.id, { sync: 'queued' });
+  const n = stuck.length + stuckSurveys.length;
+  if (n) {
+    console.warn(`[sync] 掰回 ${n} 条卡在上传中的速记/问卷`);
     emit();
   }
-  return stuck.length;
+  return n;
 };
 
 export const startSyncLoop = () => {

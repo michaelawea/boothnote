@@ -230,6 +230,14 @@ const SPEC = {
         filters: [['accountType', 'IS', ['DISTRIBUTOR', 'SUB_DISTRIBUTOR', 'DEALER', 'SUB_DEALER', 'END_USER']]],
         why: 'D54：渠道链和集团树是两根轴。这个视图只看渠道那根，免得和 OEM 名单混在一起。',
       },
+      {
+        name: '终端客户',
+        type: 'TABLE',
+        icon: 'IconUser',
+        fields: ['name', 'accountType', 'soldVia', 'hqCountry'],
+        filters: [['accountType', 'IS', ['END_USER']]],
+        why: 'D138：维护者「客户类型变成终端客户，以后看用户的时候，反正可以筛选」—— 这一屏就是筛好的。展台问卷建的消费者都在这里，答了什么点进去看关联的 2C 问卷。',
+      },
     ],
   },
 
@@ -282,6 +290,27 @@ const SPEC = {
   },
   intelItem: {
     indexFields: ['name', 'itemKey', 'question', 'appliesTo', 'wave', 'weight', 'isEnabled'],
+    views: [],
+  },
+
+  // ── 2C 问卷（D138）——「问卷统计」就是这张表：按任一列分组 / 筛选 / 导出 ──
+  consumerSurvey: {
+    indexFields: [
+      'name',
+      'equipment',
+      'appliancesInUse',
+      'appliancesWanted',
+      'installPreference',
+      'brandChooser',
+      'overnight',
+      'campingPain',
+      'wish',
+      'postcode',
+      'eventName',
+      'surveyedAt',
+      'recordedBy',
+      'company',
+    ],
     views: [],
   },
 };

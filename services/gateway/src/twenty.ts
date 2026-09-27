@@ -798,6 +798,39 @@ export const createCompany = async (input: {
   return id;
 };
 
+// ── 2C 问卷（D138）──────────────────────────────────────────────────
+// 调用顺序与幂等性在 `surveys.ts` 顶部；这里只是四下写入。
+
+/** 按手机上那份问卷的 id 找已经写进去的那一行 —— 重试前先查，有就不再建。 */
+export const findConsumerSurvey = async (
+  clientId: string,
+): Promise<{ id: string; companyId: string | null } | null> => {
+  const r = await call('GET', `/rest/consumerSurveys?filter=${encodeURIComponent(`clientId[eq]:${clientId}`)}`);
+  const hit = r?.data?.consumerSurveys?.[0];
+  return hit ? { id: hit.id, companyId: hit.companyId ?? hit.company?.id ?? null } : null;
+};
+
+export const createConsumerSurvey = async (body: Record<string, unknown>): Promise<string> => {
+  const r = await call('POST', '/rest/consumerSurveys', body);
+  return (r?.data?.createConsumerSurvey ?? r?.data)?.id as string;
+};
+
+/**
+ * 答问卷的人 → 一家终端客户。
+ *
+ * 🔴 **故意不给 `accountCode`**：`listCompanies()` 只收有代号的，于是几百个消费者
+ * 不会出现在 PWA 的客户页、也不会进 agent 的候选名单（那两处都是给 56 家 OEM 用的）。
+ * 在 Twenty 里照样是一家客户，按「账户类型 = 终端客户」筛得出来。
+ */
+export const createEndUserCompany = async (name: string): Promise<string> => {
+  const r = await call('POST', '/rest/companies', { name, accountType: 'END_USER' });
+  return (r?.data?.createCompany ?? r?.data)?.id as string;
+};
+
+export const linkSurveyCompany = async (surveyId: string, companyId: string) => {
+  await call('PATCH', `/rest/consumerSurveys/${surveyId}`, { companyId });
+};
+
 /**
  * 把 A 的渠道上游设成 B（D54）。
  *

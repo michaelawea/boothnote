@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 
 import { T } from './theme';
-import { countBySync } from './db';
-import { onSyncChange, flush, anyUploading } from './sync';
+import { countBySync, mySurveys } from './db';
+import { onSyncChange, flush, flushSurveys, anyUploading } from './sync';
 import { useSyncTick } from './useSync';
 import { ProgressRing } from './components/ProgressRing';
 import { PENDING_STATES } from './retry';
@@ -85,6 +85,8 @@ export const App = () => {
     const refresh = async () => {
       let n = 0;
       for (const st of PENDING_STATES) n += await countBySync(st, myCode);
+      // 没传上去的 2C 问卷也算（D138）—— 看不见的待传等于不存在
+      n += await mySurveys(myCode).and((x) => PENDING_STATES.includes(x.sync)).count();
       setPending(n);
     };
     void refresh();
@@ -220,7 +222,7 @@ export const App = () => {
           </span>
           {(!online || pending > 0) && (
             <button
-              onClick={() => void flush({ manual: true })}  // 人点了就一定试一次
+              onClick={() => void flush({ manual: true }).then(() => flushSurveys({ manual: true }))}  // 人点了就一定试一次
               style={{
                 display: 'flex',
                 alignItems: 'center',

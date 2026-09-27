@@ -25,6 +25,7 @@ export const GUARDED = [
 
 /** 删除顺序 = 外键的反方向。**别改顺序**，改了会撞外键。 */
 export const TABLES = [
+  'survey_response', // D138 2C 问卷中转表 —— 只挂 app_user，谁都不指向它，放哪都行；没有触发器
   'attachment_text',
   'attachment',
   'agent_run',

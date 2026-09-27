@@ -137,6 +137,15 @@ export const IconFile = ({ size = 20 }: P) => (
   </svg>
 );
 
+/** 带勾的夹板 —— 快捷工具栏上的问卷（D136）。 */
+export const IconClipboard = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <rect x="5" y="4.5" width="14" height="16.5" rx="2" />
+    <path d="M9 4.5V3.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1" />
+    <path d="M8.5 12.5l2.2 2.2L15.5 10" />
+  </svg>
+);
+
 export const IconUndo = ({ size = 20 }: P) => (
   <svg {...base(size)}>
     <path d="M4 10h10a5 5 0 0 1 0 10h-4M4 10l4-4M4 10l4 4" />

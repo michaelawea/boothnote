@@ -12,6 +12,8 @@ import { hashPassword } from '../auth.ts';
 import { env } from '../env.ts';
 // 只给「编号已属于另一个项目」那条用例造前置数据（NEEDS_TWENTY）
 import { createProject } from '../twenty.ts';
+// D138：2C 问卷的写入心跳 / 启动恢复 —— 和 claimDue 一样直接调模块
+import { drainSurveys, resumeSurveys } from '../surveys.ts';
 
 /**
  * 网关集成测试 —— 打真实的 HTTP + 真实的库。
@@ -4017,5 +4019,220 @@ describe('网关重启之后的收尸（T99）', () => {
     }
     // 收拾干净：这一条是故意留成 running 的，别让它污染后面的用例
     await reapStaleRuns();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+//  2C 问卷（D138）：手机 → survey_response → Twenty，不走 agent
+// ══════════════════════════════════════════════════════════════════
+/** 本地 Twenty 里有没有 consumerSurvey 对象（没 provision 过就 skip 真写那两条，并说清楚为什么）。 */
+const surveyObjectReady = twentyProbe
+  ? await twentyFetch('/rest/metadata/objects?limit=200')
+      .then((r) => r.json())
+      .then((j: any) => (j?.data?.objects ?? j?.data ?? []).some((o: any) => o?.nameSingular === 'consumerSurvey'))
+      .catch(() => false)
+  : false;
+
+describe('2C 问卷 POST /surveys（D138）', () => {
+  let token = '';
+  let otherToken = '';
+  const survey = (over: Record<string, unknown> = {}) => ({
+    clientId: randomUUID(),
+    surveyKey: 'vdl2026',
+    answers: {
+      equipment: ['solar', 'dcdc'],
+      appliances: { fridge: 'have', ac: 'want' },
+      install: 'pro',
+      brand_chooser: 'installer',
+      overnight: ['aire', 'autonomy'],
+      camping_pain: 'Pas assez de prises',
+      wish: 'Clim la nuit sans camping',
+    },
+    contact: { name: `Itest Dupont ${SUFFIX}`, phone: '06 12 34 56 78', postcode: '75001' },
+    consentAt: new Date().toISOString(),
+    createdAt: Date.now(),
+    ...over,
+  });
+  const send = (tk: string, body: unknown) =>
+    req('/surveys', {
+      method: 'POST',
+      headers: { ...auth(tk), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  const row = async (clientId: string): Promise<any> =>
+    (await sql`select * from survey_response where client_id = ${clientId}`)[0];
+  /** POST 之后网关在后台试着写 Twenty —— 等它落定（成功或失败）再断言 */
+  const settled = async (clientId: string) => {
+    for (let i = 0; i < 100; i++) {
+      const r = await row(clientId);
+      if (r && !['pending', 'committing'].includes(r.status)) return r;
+      await sleep(100);
+    }
+    return row(clientId);
+  };
+
+  before(async () => {
+    token = (await loginAs(ADMIN)).token;
+    otherToken = (await loginAs(PLAIN)).token;
+  });
+
+  it('没 token → 401', async () => {
+    const r = await req('/surveys', { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } });
+    assert.equal(r.status, 401);
+  });
+
+  it('clientId 不是 uuid → 400；不认识的题套 → 422', async () => {
+    assert.equal((await send(token, survey({ clientId: 'x' }))).status, 400);
+    const r = await send(token, survey({ surveyKey: 'vdl1999' }));
+    assert.deepEqual([r.status, r.json.error], [422, 'unknown_survey']);
+  });
+
+  it('🔴 留了姓名没有同意时间 → 422，一行都不落', async () => {
+    const b = survey({ consentAt: null });
+    const r = await send(token, b);
+    assert.deepEqual([r.status, r.json.error], [422, 'consent_required']);
+    assert.equal(await row(b.clientId as string), undefined);
+  });
+
+  it('什么都没答也没留联系方式 → 422', async () => {
+    const r = await send(token, survey({ answers: {}, contact: {} }));
+    assert.deepEqual([r.status, r.json.error], [422, 'empty']);
+  });
+
+  it('收下：201，答案按白名单清洗后落库；同一个 clientId 再交 → 200 同一份，不多一行', async () => {
+    const b = survey();
+    (b.answers as any).equipment = ['solar', 'dcdc', 'nuclear'];
+    (b.answers as any).hacker = 'drop table';
+    const r1 = await send(token, b);
+    assert.equal(r1.status, 201);
+
+    const got = await row(b.clientId as string);
+    assert.deepEqual(got.answers.equipment, ['solar', 'dcdc']);
+    assert.ok(!('hacker' in got.answers));
+    assert.equal(got.contact.name, `Itest Dupont ${SUFFIX}`);
+    assert.ok(got.consent_at);
+
+    const r2 = await send(token, b);
+    assert.deepEqual([r2.status, r2.json.id, r2.json.duplicate], [200, r1.json.id, true]);
+    const [c] = await sql<Array<{ n: number }>>`select count(*)::int as n from survey_response where client_id = ${b.clientId as string}`;
+    assert.equal(c?.n, 1);
+  });
+
+  it('别人拿同一个 clientId 来交 → 409，不透露那份是什么', async () => {
+    const b = survey();
+    assert.equal((await send(token, b)).status, 201);
+    const r = await send(otherToken, b);
+    assert.deepEqual([r.status, r.json.error], [409, 'client_id_taken']);
+  });
+
+  it('🔴 Twenty 写不进去：问卷留在中转表里，排好下一次，答案一个字不动', { skip: twentyProbe ? '这条要 Twenty 不可达' : false }, async () => {
+    const b = survey();
+    assert.equal((await send(token, b)).status, 201);
+    const r = await settled(b.clientId as string);
+    assert.equal(r.status, 'failed');
+    assert.ok(r.attempts >= 1);
+    assert.ok(r.last_error);
+    assert.ok(new Date(r.next_try_at).getTime() > Date.now(), '下一次重试要排在未来');
+    assert.equal(r.answers.wish, 'Clim la nuit sans camping');
+    assert.equal(r.twenty_survey_id, null);
+
+    const h = await req('/agent/health');
+    assert.ok(h.json.surveys.failed >= 1, '/agent/health 要看得见写不进去的问卷');
+  });
+
+  it('网关写到一半被杀（committing）→ 启动时放回队列', async () => {
+    const b = survey();
+    assert.equal((await send(token, b)).status, 201);
+    await settled(b.clientId as string);
+    await sql`update survey_response set status = 'committing' where client_id = ${b.clientId as string}`;
+    await resumeSurveys();
+    assert.equal((await row(b.clientId as string)).status, 'pending');
+    // 收拾：别让它在后面的用例里被心跳捡走
+    await sql`update survey_response set status = 'failed', next_try_at = now() + interval '1 hour' where client_id = ${b.clientId as string}`;
+  });
+
+  // ── 下面这组真写 Twenty ───────────────────────────────────────────
+  const NEEDS_SURVEY_OBJECT = surveyObjectReady
+    ? {}
+    : { skip: twentyProbe ? 'Twenty 里还没有 consumerSurvey —— 先跑 provision-twenty.mjs' : NEEDS_TWENTY.skip };
+  const made: Array<[string, string]> = [];
+  /**
+   * 🔴 收拾**这两个测试账号交过的每一份**，不只是下面两条真写用例建的那几条。
+   *
+   * Twenty 通的时候，前面那几条（201 / 409 / 重启）交上去的问卷也会被后台心跳写进 CRM ——
+   * 第一版只删了 `made` 里那两条，跑两轮留下 6 份问卷 + 6 家「Itest Dupont」客户（2026-09-27 实测）。
+   * 顺序：等在途的写完 → 删 CRM 里的 → 删中转表的行（不删的话 `--here` 那档的常驻网关以后还会重试）。
+   * 只动测试账号的行 —— `--here` 对着的是你自己的库，里面可能有真问卷。
+   */
+  after(async () => {
+    const mine = () => sql`(select id from app_user where user_code in (${ADMIN.code}, ${PLAIN.code}))`;
+    for (let i = 0; i < 100; i++) {
+      const [busy] = await sql<Array<{ n: number }>>`
+        select count(*)::int as n from survey_response where user_id in ${mine()} and status = 'committing'`;
+      if (!busy?.n) break;
+      await sleep(100);
+    }
+    const rows = await sql<Array<{ s: string | null; c: string | null }>>`
+      select twenty_survey_id as s, twenty_company_id as c from survey_response where user_id in ${mine()}`;
+    for (const r of rows) {
+      if (r.s) made.push(['consumerSurveys', r.s]);
+      if (r.c) made.push(['companies', r.c]);
+    }
+    for (const [plural, id] of new Map(made.map((m) => [m.join('/'), m])).values())
+      await twentyFetch(`/rest/${plural}/${id}`, { method: 'DELETE' }).catch(() => {});
+    await sql`delete from survey_response where user_id in ${mine()}`;
+  });
+  const findSurvey = async (clientId: string) => {
+    const r = await twentyFetch(`/rest/consumerSurveys?filter=${encodeURIComponent(`clientId[eq]:${clientId}`)}`);
+    return ((await r.json()) as any)?.data?.consumerSurveys ?? [];
+  };
+
+  it('真写进 Twenty：一家 END_USER 客户（没有 accountCode）+ 一条问卷，答案落在对的列上', NEEDS_SURVEY_OBJECT, async () => {
+    const b = survey();
+    assert.equal((await send(token, b)).status, 201);
+    const r = await settled(b.clientId as string);
+    assert.equal(r.status, 'committed', `没写进去：${r.last_error}`);
+    made.push(['consumerSurveys', r.twenty_survey_id], ['companies', r.twenty_company_id]);
+
+    const [s] = await findSurvey(b.clientId as string);
+    assert.equal(s.id, r.twenty_survey_id);
+    assert.equal(s.companyId, r.twenty_company_id);
+    assert.deepEqual([...s.equipment].sort(), ['DCDC', 'SOLAR']);
+    assert.deepEqual(s.appliancesInUse, ['FRIDGE']);
+    assert.deepEqual(s.appliancesWanted, ['AC']);
+    assert.equal(s.installPreference, 'PRO');
+    assert.equal(s.brandChooser, 'INSTALLER');
+    assert.deepEqual([...s.overnight].sort(), ['AIRE', 'AUTONOMY']);
+    assert.equal(s.wish, 'Clim la nuit sans camping');
+    assert.equal(s.contactPhone, '06 12 34 56 78');
+    assert.equal(s.eventName, 'VDL 2026');
+    assert.ok(s.consentAt);
+    assert.ok(s.recordedById, '录入人要挂上');
+
+    const c = (await (await twentyFetch(`/rest/companies/${r.twenty_company_id}`)).json()) as any;
+    const company = c?.data?.company ?? c?.data;
+    assert.equal(company.name, `Itest Dupont ${SUFFIX}`);
+    assert.equal(company.accountType, 'END_USER');
+    assert.ok(!company.accountCode, '🔴 有了 accountCode 就会混进 PWA 的客户页和 agent 的候选名单');
+  });
+
+  it('🔴 网关忘了自己写过（id 丢了）再重试：按 clientId 找回，不多一条问卷、不多一家客户', NEEDS_SURVEY_OBJECT, async () => {
+    const b = survey({ contact: {}, consentAt: null });
+    assert.equal((await send(token, b)).status, 201);
+    const first = await settled(b.clientId as string);
+    assert.equal(first.status, 'committed', `没写进去：${first.last_error}`);
+    made.push(['consumerSurveys', first.twenty_survey_id], ['companies', first.twenty_company_id]);
+
+    await sql`
+      update survey_response
+         set status = 'pending', next_try_at = now(), twenty_survey_id = null, twenty_company_id = null
+       where client_id = ${b.clientId as string}`;
+    await drainSurveys();
+
+    const again = await row(b.clientId as string);
+    assert.equal(again.status, 'committed');
+    assert.equal(again.twenty_survey_id, first.twenty_survey_id);
+    assert.equal(again.twenty_company_id, first.twenty_company_id, '多建了一家客户');
+    assert.equal((await findSurvey(b.clientId as string)).length, 1);
   });
 });

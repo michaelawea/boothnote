@@ -85,6 +85,40 @@ export const ACCOUNT_TYPES = [
  */
 export const CHAIN_ORDER = ['distributor', 'subDistributor', 'dealer', 'subDealer', 'endUser'];
 
+// ── 枚举：2C 问卷（D138）。value 与 PWA 的 `apps/capture-pwa/src/survey.ts` 选项 id 逐个对应，
+//    网关 `services/gateway/src/survey.ts` 再抄一份 —— 三处由 `survey.test.ts` 对账。
+export const SURVEY_EQUIPMENT = [
+  { value: 'lithium',  label: 'Lithium Battery 锂电池',   color: 'green'  },
+  { value: 'solar',    label: 'Solar Panel 太阳能板',     color: 'yellow' },
+  { value: 'inverter', label: 'Inverter 逆变器',          color: 'blue'   },
+  { value: 'dcdc',     label: 'DC-DC Charger 充电器',     color: 'turquoise' },
+  { value: 'none',     label: 'None 都没有',              color: 'gray'   },
+];
+export const SURVEY_APPLIANCES = [
+  { value: 'ac',        label: 'Air Con 空调',            color: 'sky'    },
+  { value: 'fridge',    label: 'Fridge 冰箱',             color: 'blue'   },
+  { value: 'coffee',    label: 'Coffee Machine 咖啡机',   color: 'orange' },
+  { value: 'hob',       label: 'Electric Hob 电炉灶',     color: 'red'    },
+  { value: 'microwave', label: 'Microwave 微波炉',        color: 'amber'  },
+  { value: 'hairdryer', label: 'Hair Dryer 吹风机',       color: 'pink'   },
+  { value: 'tv',        label: 'TV 电视',                 color: 'purple' },
+  { value: 'laptop',    label: 'Laptop 电脑',             color: 'gray'   },
+  { value: 'ebike',     label: 'E-bike Charging 电动车充电', color: 'green' },
+];
+export const SURVEY_INSTALL = [
+  { value: 'diy', label: 'DIY 自己装',           color: 'blue'   },
+  { value: 'pro', label: 'Professional 专业人士', color: 'purple' },
+];
+export const SURVEY_BRAND_CHOOSER = [
+  { value: 'me',        label: 'Themselves 自己', color: 'blue'   },
+  { value: 'installer', label: 'Installer 安装商', color: 'orange' },
+];
+export const SURVEY_OVERNIGHT = [
+  { value: 'camping',  label: 'Campsite 营地',          color: 'green' },
+  { value: 'aire',     label: 'Motorhome Aire 房车停车区', color: 'blue' },
+  { value: 'autonomy', label: 'Off-grid 离网露营',      color: 'amber' },
+];
+
 const yn = (v, l, c) => ({ value: v, label: l, color: c });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -183,6 +217,23 @@ export const OBJECTS = [
       'D59：项目相关的文档。🔴 **`docSource` 必须能区分三种来源** —— '
       + '客户给的附件 / AI 生成的 / 按口述整理的。混在一起最危险：'
       + 'AI 整理的东西被当成客户书面确认过的规格，是这类系统最贵的一种错。',
+  },
+
+  // ═════════════════════════════════════════════════════════════════
+  //  D138：2C 终端用户问卷（法国 VDL 展起）
+  //
+  //  维护者 2026-09-27：「全部进入后面的 Twenty 数据库里面，只是客户类型变成终端客户，
+  //  以后看用户的时候，反正可以筛选。」→ 每份问卷 = 一家 accountType=END_USER 的客户
+  //  + 这里一条问卷记录（答案 + 联系方式）。不走 AI：表单是固定的，网关直接写。
+  // ═════════════════════════════════════════════════════════════════
+  {
+    nameSingular: 'consumerSurvey', namePlural: 'consumerSurveys',
+    labelSingular: 'Consumer Survey 2C 问卷', labelPlural: 'Consumer Survey 2C 问卷',
+    icon: 'IconClipboardCheck',
+    description:
+      'D138：展台上 2C 终端用户的问卷，一份一行。客户本身是一条 accountType=END_USER 的 company。'
+      + '🔴 选项 value 收过数据之后不许改（统计靠它）—— 改文案只改 label。'
+      + '联系方式只在客户同意时才有（consentAt）；要删一个人的信息，删这一行和那家客户即可。',
   },
 ];
 
@@ -558,6 +609,35 @@ export const FIELDS = {
       description: '§7.3：RV OEM 是车型年周期，「现在没机会」几乎总是「MY2027 已锁」。有了它，大领导要的第 2 类分类就是一个视图。' },
     { name: 'intelCompleteness', label: 'Intel Completeness 项目情报完整度%', type: 'NUMBER', icon: 'IconProgressCheck' },
     { name: 'nextAsk', label: 'Next Ask 下次该问', type: 'TEXT', icon: 'IconMessageQuestion' },
+  ],
+
+  // ── 2C 问卷（D138）──────────────────────────────────────────────
+  consumerSurvey: [
+    // ⚠️ 反向字段名是 Twenty 从这个中文 label 音译出来的（contributor 上那列就叫 `jiLuDeXiangMu`），
+    //    **别以数字开头**（「2C 问卷」→ `2CWenJuan` 不是合法字段名）
+    { ...rel('company', '终端客户问卷', 'IconClipboardCheck'), name: 'company', label: 'End User 终端客户', icon: 'IconBuilding',
+      description: '答问卷的那个人，落成一家 accountType=END_USER 的客户（网关建，不查重 —— 消费者不会和 56 家 OEM 撞名）。' },
+    { ...rel('contributor', '做过的问卷', 'IconUserEdit'), name: 'recordedBy', label: 'Recorded By 录入人', icon: 'IconUserEdit' },
+    { name: 'eventName', label: 'Event 展会', type: 'TEXT', icon: 'IconCalendarEvent',
+      description: '哪一场展会收的（如 VDL 2026）。以后别的展会用同一套题，按这一列分开统计。' },
+    { name: 'clientId', label: 'Client ID 幂等键', type: 'TEXT', icon: 'IconKey', isUnique: true,
+      description: '手机上生成的那份问卷 id。网关重试写入前先按它查 —— 有就不再建，所以重试永远不会多出一份。' },
+    { name: 'surveyedAt', label: 'Surveyed At 填写时间', type: 'DATE_TIME', icon: 'IconClock' },
+    { name: 'equipment', label: 'Equipment 现有电力设备', type: 'MULTI_SELECT', icon: 'IconBattery', options: SURVEY_EQUIPMENT },
+    { name: 'appliancesInUse', label: 'Appliances In Use 在用电器', type: 'MULTI_SELECT', icon: 'IconPlug', options: SURVEY_APPLIANCES },
+    { name: 'appliancesWanted', label: 'Appliances Wanted 想加的电器', type: 'MULTI_SELECT', icon: 'IconPlus', options: SURVEY_APPLIANCES },
+    { name: 'installPreference', label: 'Install 自己装还是找专业', type: 'SELECT', icon: 'IconTool', options: SURVEY_INSTALL },
+    { name: 'brandChooser', label: 'Brand Chosen By 品牌谁选', type: 'SELECT', icon: 'IconTag', options: SURVEY_BRAND_CHOOSER },
+    { name: 'overnight', label: 'Overnight 过夜方式', type: 'MULTI_SELECT', icon: 'IconMoon', options: SURVEY_OVERNIGHT },
+    { name: 'campingPain', label: 'Campsite Pain Points 营地不满', type: 'TEXT', icon: 'IconMoodSad' },
+    { name: 'wish', label: 'Wish 想做但做不到', type: 'TEXT', icon: 'IconBulb' },
+    // 联系方式用 TEXT 不用 Twenty 的 EMAILS / PHONES：展台上记的是「06 12 34 56 78」这种，
+    // 那两个类型会做格式校验，一次校验失败就是整份问卷写不进去 —— 答案比格式值钱。
+    { name: 'contactEmail', label: 'Email 邮箱', type: 'TEXT', icon: 'IconMail' },
+    { name: 'contactPhone', label: 'Phone 电话', type: 'TEXT', icon: 'IconPhone' },
+    { name: 'postcode', label: 'Postcode 邮编', type: 'TEXT', icon: 'IconMapPin' },
+    { name: 'consentAt', label: 'Consent At 同意时间', type: 'DATE_TIME', icon: 'IconShieldCheck',
+      description: 'R20：客户同意保存联系方式的时间。没有这一格就不会有姓名/电话/邮箱（网关挡）。' },
   ],
 };
 

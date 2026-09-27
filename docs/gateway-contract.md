@@ -123,7 +123,14 @@ PWA (capture.域名)  ──只认网关，永不直连 Twenty──▶  网关 
 本地留一份账，三个用途：查重（不用每次问 Twenty）、护栏②「一条速记最多造 1 个」的判据、管理台看它造了什么。
 `item_key` 上有唯一索引 —— 那是护栏①的最后一道。
 
-### 1.8 音频与附件文件
+### 1.8 `survey_response` —— 2C 问卷中转表（D138）
+
+手机交上来的问卷先落这里，心跳写进 Twenty（`consumerSurvey` + 一家 `END_USER` 客户）。
+**没有只增不改的触发器**：里面有消费者的姓名电话，要求删除时必须删得掉（R20）。
+`status` ∈ `pending` / `committing` / `committed` / `failed`；失败按 30s 起翻倍、封顶 1 小时重试，不设上限。
+重试安全：Twenty 那边先按 `clientId`（unique）查，客户 id 建完立刻记进 `twenty_company_id`。
+
+### 1.9 音频与附件文件
 
 落磁盘 `${GATEWAY_AUDIO_DIR}/YYYY/MM/<uuid>-<原名>`，容器卷挂载。
 
@@ -577,6 +584,29 @@ D75 起它还兼管**重录的撤销**：那时恢复的是「上一次提交后
 
 完整度只按**有权重**的项算。agent 造的那些 `weight=0`，不进分母 ——
 否则它造得越多，所有客户的完整度看起来越低，那个指标当场作废（D47 护栏③）。
+
+### `POST /surveys` —— 交一份 2C 问卷（D138）· JSON
+
+**不走 agent、不进 inbox、没有确认卡**：表单本身就是结构化的，网关直接写 Twenty。
+
+```jsonc
+{ "clientId": "<uuid，幂等键>", "surveyKey": "vdl2026",
+  "answers": { "equipment": ["solar"], "appliances": { "fridge": "have", "ac": "want" },
+               "install": "pro", "brand_chooser": "installer", "overnight": ["aire"],
+               "camping_pain": "…", "wish": "…" },
+  "contact": { "name": "…", "phone": "…", "email": "…", "postcode": "…" },   // 都可空
+  "consentAt": "2026-09-27T10:00:00Z",   // 有 name/phone/email 时必填
+  "createdAt": 1790518882646 }           // 手机上填的时间（ms）
+```
+
+| 回包 | 意思 |
+|---|---|
+| `201 {id,status}` | 收下了；进 Twenty 是网关自己的事，不等 |
+| `200 {id,status,duplicate:true}` | 同一个 `clientId` 交过了（断网重传），不多一行 |
+| `400 missing_client_id` · `422 unknown_survey / consent_required / empty` · `409 client_id_taken` | 见 `src/survey.ts` |
+
+答案按白名单清洗：不认识的题、选项、状态一律丢掉。选项 id 三处对账（PWA `survey.ts` · 网关 `survey.ts` · `twenty-schema.mjs`），
+`src/__tests__/survey.test.ts` 红了就是对不上。写 Twenty 进不去时 `GET /agent/health` 的 `surveys.failed` 会涨。
 
 ### 管理控制台 · 独立的 `X-Admin-Token`，不是 PWA 的 JWT
 
