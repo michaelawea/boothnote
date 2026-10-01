@@ -192,6 +192,14 @@ nrun scripts/seed-intel-items.mjs --yes && nrun scripts/recompute-intel.mjs --ye
   echo "  ⚠️  情报清单没灌上 —— 「这家还缺什么」会一直显示「清单还没配内容」。"; }
 
 echo
+echo "  ── 项目类型模板（幂等 · D140）──"
+# 门户建项目必须先选类型；一个都没有时门户那一屏是空的，而且不报错。
+# 只补缺的、不改已有的 —— 类型和阶段是门户 admin 在管，每次部署覆盖一遍等于把他的改动打回去。
+# 失败不阻断：下面 verify-deploy 会回读「至少一个在用类型 + 在用阶段」，那一道是硬的。
+nrun scripts/seed-project-types.mjs --yes || {
+  echo "  ⚠️  项目类型模板没灌上 —— 门户里建项目时没有类型可选。"; }
+
+echo
 echo "  ── CRM 视图（幂等 · D60）──"
 # 必须在 provision-twenty 之后：视图引用的是字段 id，字段不存在就配不上
 nrun scripts/provision-views.mjs --yes || {

@@ -40,6 +40,15 @@
 		reverse_proxy gateway:4000
 	}
 
+	# ── D141：门户那组接口**只给本机用**，公网一律 404 ────────────────────
+	# 订单门户走 127.0.0.1:4000 直连网关（docker-compose.yml 的 gateway ports）。
+	# 从这里过的话，Cloudflare Flexible 的回源段是明文 —— X-Portal-Secret 会裸奔（R16）。
+	# ⚠️ handle 块之间互斥、按路径长短排序（长的先匹配），所以它和上面的 /api/* 谁写在前都一样：
+	#    /api/portal/... 永远先落到这里。路径匹配不分大小写，/API/PORTAL/ 也挡得住。
+	handle /api/portal/* {
+		respond 404
+	}
+
 	# ── 管理控制台 ────────────────────────────────────────────────
 	# 挂在一个不好猜的路径下（.env 的 ADMIN_PATH）。
 	# ⚠️ 路径只是降噪，**真正的门是 ADMIN_TOKEN**，走 X-Admin-Token 请求头。

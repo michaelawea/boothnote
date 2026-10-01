@@ -55,6 +55,34 @@ describe('启动序列（T99）', () => {
   });
 });
 
+describe('门户那组接口（D139）', () => {
+  it('registerPortal(app) 真的接上了，而且在 app.listen() 之前 —— 「写了」≠「接上了」', () => {
+    const reg = src.indexOf('registerPortal(app)');
+    const listen = src.indexOf('await app.listen(');
+    assert.ok(reg > 0, '🔴 index.ts 里没有 registerPortal(app) —— /portal/* 全是 404，门户那边永远是「服务不可用」');
+    assert.ok(listen > 0, '🔴 找不到 await app.listen(');
+    assert.ok(reg < listen, '🔴 路由注册在 listen 之后');
+  });
+
+  it('/agent/health 带 portal 那一格（部署后核「开没开」只看得到这里和横幅）', () => {
+    assert.match(src, /portal:\s*portalStatus\(\)/);
+  });
+
+  /**
+   * 🔴 **tsc 过了 ≠ 进程起得来。** 网关是 Node 直接跑 .ts（strip-only），`constructor(readonly x)`
+   * 这类写法 tsc 放过、Node 当场 SyntaxError —— 2026-09-30 第一版 portal.ts 就是这样，
+   * 单元档全绿，一次性环境里网关一启动就退出。所以在单元档里真 import 一次。
+   * （db.ts 在模块加载时只建连接池、不连库 —— 给个占位地址就够。）
+   */
+  it('portal.ts 在 Node 的 strip-only 模式下真的加载得起来', async () => {
+    process.env.APP_DATABASE_URL ??= 'postgres://unit@127.0.0.1:9/none';
+    const m = await import('../portal.ts');
+    assert.equal(typeof m.registerPortal, 'function');
+    const { sql } = await import('../db.ts');
+    await sql.end({ timeout: 1 });
+  });
+});
+
 /**
  * 收尸的**前提判据**本身（T99）。
  *

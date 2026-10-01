@@ -24,6 +24,12 @@ PWA (capture.域名)  ──只认网关，永不直连 Twenty──▶  网关 
    `canSeeBoard` 只剩两个用处：发不发 `boardUrl`，和 `GET /records` 能不能进。
 4. **写 Twenty 只发生在一个函数里**：`src/confirm.ts` 的 `commitToTwenty()`。
    agent 的工具清单里没有任何能写 CRM 的东西 —— 不是「禁止调用」，是没注册（Ring 3）。
+   **被允许的例外只有这三条**（每一条都是「人明确点过、没有待确认这一层可挂」的写入）：
+   · 2C 问卷 `POST /surveys` → `src/surveys.ts`（D138，经 `survey_response` 中转表）
+   · 管理台建账号时的 `upsertContributor`（`src/admin.ts`，只写 contributor 投影 —— 规则 5）
+   · 订单门户 `/portal/*` → `src/portal.ts`（D139–D142，只写 projectType / projectTypeStage /
+     projectUpdate 和 project 上门户那几列；见下面「订单门户」一节）
+   **第四条例外出现之前，先改这一段。**
 
 ---
 
@@ -607,6 +613,27 @@ D75 起它还兼管**重录的撤销**：那时恢复的是「上一次提交后
 
 答案按白名单清洗：不认识的题、选项、状态一律丢掉。选项 id 三处对账（PWA `survey.ts` · 网关 `survey.ts` · `twenty-schema.mjs`），
 `src/__tests__/survey.test.ts` 红了就是对不上。写 Twenty 进不去时 `GET /agent/health` 的 `surveys.failed` 会涨。
+
+### 订单门户 · `/portal/*`（D139–D142）· 独立的 `X-Portal-Secret`
+
+**完整契约在 [`docs/portal-projects.md`](portal-projects.md) §4**（请求体、快照形状、错误码）；这里只记和别的端点不一样的地方。
+
+| 项 | 规则 |
+|---|---|
+| 谁调 | **只有订单门户的服务端**，走本机 `http://127.0.0.1:4000`（compose 里 gateway 只绑回环）。Caddy 对外把 `/api/portal/*` 回 **404** —— Cloudflare Flexible 的回源段是明文，secret 不能过公网（D141） |
+| 鉴权 | 头 `X-Portal-Secret` = `PORTAL_SECRET`。**留空 = 整组 503 `portal_disabled`**；错/缺 → 401 `bad_secret`（故意慢 400ms）；**放进 URL 一律不认** |
+| 操作人 | 可选头 `X-Portal-Actor`（门户 admin 用户名）→ 进展的 `authorName`。门户账号不进 CRM（规则 5） |
+| Twenty 出错 | 一律 **502 `twenty_unavailable`，不回显 Twenty 原文** —— 门户据此改用它的缓存 |
+| 关系 | 只收已存在的 UUID（规则 3）：公司 / 类型 / 阶段逐个回读；阶段必须属于项目的类型 |
+| 删除 | `DELETE /portal/updates/:id` 只走 GraphQL 软删（§2.38）。项目不删（改状态 / 取消公开） |
+| 快照缓存 | 进程内约 15 秒，**任何一次写都作废** |
+
+路由：`GET /portal/snapshot` · `POST /portal/project-types` · `PATCH /portal/project-types/:id` ·
+`POST /portal/projects` · `PATCH /portal/projects/:id` · `POST /portal/projects/:id/updates` ·
+`PATCH /portal/updates/:id` · `DELETE /portal/updates/:id`。`GET /agent/health` 多一格 `portal: "on"|"off"`。
+
+核对上线：`curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:4000/portal/snapshot` 应为 **401**
+（503 = secret 没进容器，404 = 路由没注册或打到了 Caddy）。
 
 ### 管理控制台 · 独立的 `X-Admin-Token`，不是 PWA 的 JWT
 

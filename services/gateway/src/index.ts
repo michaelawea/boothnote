@@ -81,6 +81,7 @@ import { describe as describePlan, labelOf, plan as deletionPlan, type Deletable
 import { inheritance, ownerOf, scopeOf } from './supersede.ts';
 import { suggestProjectCode } from './projectCode.ts';
 import { registerAdmin } from './admin.ts';
+import { portalStatus, registerPortal } from './portal.ts';
 import { ingestNote } from './ingest.ts';
 import {
   registerChannels,
@@ -122,6 +123,8 @@ app.get('/agent/health', async () => ({
   channels: channelStatus(),
   // 2C 问卷进不去 Twenty 时（多半是 schema 没 provision），这一格是唯一看得见的地方（D138）
   surveys: await surveyHealth().catch(() => null),
+  // D139：订单门户那组接口开没开（PORTAL_SECRET 留空 = off = 整组 503）
+  portal: portalStatus(),
 }));
 
 // ── 登录 ────────────────────────────────────────────────────────
@@ -1798,6 +1801,8 @@ registerChannels(app);
 registerLabChannel(app);
 // ── 2C 问卷（D138）：不走 agent，网关直接写 Twenty。──
 registerSurveys(app, requireAuth);
+// ── 订单门户的项目进度（D139–D142）：只有门户服务端经本机 127.0.0.1 调，secret 留空 = 整组 503。──
+registerPortal(app);
 
 warnIfColumnSwitchOn();
 /**
@@ -1845,6 +1850,10 @@ console.log(
 // D127 路由器：和 D125 同一条判据 —— 「配错了完全不报错、只是行为不对」的配置要露在横幅上
 console.log(
   `   路由    ${env.routerEnabled ? `开（${env.routerModel} · 不思考 · 超时 ${env.routerTimeoutMs / 1000}s · 判不动进速记 · 杂项由 ${env.chatModel} 直答）` : '关（CHANNEL_ROUTER=off —— 统一入口每条都进速记）'}`,
+);
+// D139：和钉钉那两行同一条判据（D67）—— 「配错了完全不报错、只是门户那边一直显示旧数据」的开关要露在横幅上
+console.log(
+  `   门户    ${env.portalSecret ? '开（/portal/* · 只该从本机 127.0.0.1:4000 调）' : '关（PORTAL_SECRET 留空 —— /portal/* 503）'}`,
 );
 console.log(
   `   实验室  ${env.labSecret ? `开（${env.labModel} · 思考 ${env.labReasoning || 'none'} · 窗口 ${env.labSessionWindowMin} 分钟 · 同步等 ${env.labSyncWaitMs / 1000}s）` : '关（CHANNEL_LAB_SECRET 留空）'}`,

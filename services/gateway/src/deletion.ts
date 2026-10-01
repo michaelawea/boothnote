@@ -53,6 +53,7 @@ export type DeletableRow = {
 const OBJECT_LABEL: Record<DeletableObject, string> = {
   workItem: '工作项',
   projectDoc: '项目文档',
+  projectUpdate: '项目进展', // D139：只有门户删它（DELETE /portal/updates/:id），速记管道不建
   visit: '拜访',
   productFitment: '选型情报',
   supportCase: '售后问题',

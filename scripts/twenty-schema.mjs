@@ -119,6 +119,26 @@ export const SURVEY_OVERNIGHT = [
   { value: 'autonomy', label: 'Off-grid 离网露营',      color: 'amber' },
 ];
 
+// ── 枚举：客户项目进度（D139 / D140）。网关 `services/gateway/src/portalModel.ts` 抄一份，
+//    `portalModel.test.ts` 逐个对账 —— 网关镜像里读不到这个文件，只能各存一份。
+//    🔴 value 收过数据之后不许改（门户和网关都按它判断）—— 改文案只改 label。
+export const PROJECT_STATUSES = [
+  { value: 'active',    label: 'Active 进行中',    color: 'green' },
+  { value: 'onHold',    label: 'On Hold 暂停',     color: 'amber' },
+  { value: 'done',      label: 'Done 已完成',      color: 'blue'  },
+  { value: 'cancelled', label: 'Cancelled 已取消', color: 'gray'  },
+];
+export const PROJECT_UPDATE_KINDS = [
+  { value: 'communication', label: 'Communication 沟通',   color: 'sky'    },
+  { value: 'milestone',     label: 'Milestone 里程碑',     color: 'purple' },
+  { value: 'stageChange',   label: 'Stage Change 换阶段',  color: 'green'  },
+  { value: 'note',          label: 'Note 备注',            color: 'gray'   },
+];
+export const DATE_PRECISIONS = [
+  { value: 'minute', label: 'Minute 精确到分钟', color: 'blue' },
+  { value: 'day',    label: 'Day 只到日期',      color: 'gray' },
+];
+
 const yn = (v, l, c) => ({ value: v, label: l, color: c });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -234,6 +254,40 @@ export const OBJECTS = [
       'D138：展台上 2C 终端用户的问卷，一份一行。客户本身是一条 accountType=END_USER 的 company。'
       + '🔴 选项 value 收过数据之后不许改（统计靠它）—— 改文案只改 label。'
       + '联系方式只在客户同意时才有（consentAt）；要删一个人的信息，删这一行和那家客户即可。',
+  },
+
+  // ═════════════════════════════════════════════════════════════════
+  //  D139–D142：客户项目进度（订单门户经网关 /portal/* 读写，docs/portal-projects.md）
+  //
+  //  🔴 **阶段按项目类型配模板**（D140，扩展 D59④）：Twenty 的 SELECT 选项是全局的，
+  //  「这一类项目走这几步」做不成枚举，只能是行。`project.projectStage` 原样保留不动。
+  //  🔴 **客户能看到的只有两样**（D139）：已公开项目的进度，和写给客户的那一句话
+  //  （projectUpdate.customerMessage）。其余各栏都是内部的 —— 门户按白名单投影。
+  // ═════════════════════════════════════════════════════════════════
+  {
+    nameSingular: 'projectType', namePlural: 'projectTypes',
+    labelSingular: 'Project Type 项目类型', labelPlural: 'Project Type 项目类型',
+    icon: 'IconTemplate',
+    description:
+      'D140：一类项目 + 它自己的一串有序阶段（projectTypeStage）。在订单门户里管理。'
+      + '`typeCode` 唯一 —— 种子脚本和门户都按它认领；停用 = isActive:false，不删。',
+  },
+  {
+    nameSingular: 'projectTypeStage', namePlural: 'projectTypeStages',
+    labelSingular: 'Project Type Stage 类型阶段', labelPlural: 'Project Type Stage 类型阶段',
+    icon: 'IconListNumbers',
+    description:
+      'D140：某个项目类型下的一个阶段。name = 对客户显示的英文名，nameZh 给内部看，stageOrder 定顺序。'
+      + '🔴 删阶段 = isActive:false，不删行 —— 历史进展还指着它，名字不能丢。',
+  },
+  {
+    nameSingular: 'projectUpdate', namePlural: 'projectUpdates',
+    labelSingular: 'Project Update 项目进展', labelPlural: 'Project Update 项目进展',
+    icon: 'IconTimeline',
+    description:
+      'D139：项目上的一条进展（沟通 / 里程碑 / 换阶段 / 备注），一条一行。name = 内部标题。'
+      + '🔴 客户只看得到 customerVisible=true 的那几条里的 customerMessage —— 其余各栏都是内部的。'
+      + '换阶段由网关自动记一条 stageChange；删除只走软删。',
   },
 ];
 
@@ -494,6 +548,71 @@ export const FIELDS = {
       description: 'D59：客户还没给的、双方还没定的。**绝不能编成已确认值** —— test_example T03 的核心断言。' },
     { ...rel('contributor', '记录的项目', 'IconUserEdit'), name: 'recordedBy', label: 'Recorded By 录入人', icon: 'IconUserEdit' },
     { name: 'sourceInboxId', label: '原文 ID', type: 'TEXT', icon: 'IconFileText' },
+
+    // ── D139 / D140：门户进度（只由网关 /portal/* 写；上面那些列一个没动）──────
+    { ...rel('projectType', '项目', 'IconClipboardList'), name: 'projectType', label: 'Project Type 项目类型', icon: 'IconTemplate',
+      description: 'D140：决定这个项目走哪一串阶段。换类型必须同时换 currentStage（网关挡）。' },
+    { ...rel('projectTypeStage', '项目', 'IconClipboardList'), name: 'currentStage', label: 'Current Stage 当前阶段', icon: 'IconProgress',
+      description: 'D140：必须是 projectType 下的一个阶段（网关挡）。和 projectStage 是两回事 —— 那一列原样保留。' },
+    /**
+     * 🔴 defaultValue 在这里是**原样发给 Twenty 的**（provision 不替 FIELDS 转换），
+     * 所以必须写成带单引号的 UPPER_SNAKE 字面量 —— 写成 'active' 会被拒。
+     */
+    { name: 'projectStatus', label: 'Project Status 项目状态', type: 'SELECT', icon: 'IconFlag', options: PROJECT_STATUSES,
+      defaultValue: "'ACTIVE'",
+      description: 'D139：门户里的项目状态。cancelled 的项目客户一律看不到。' },
+    { name: 'portalVisible', label: 'Visible In Portal 门户公开', type: 'BOOLEAN', icon: 'IconEye', defaultValue: false,
+      description: 'D139：公开给绑定了这家客户的门户账号。**只认 true** —— 空值 = 不公开（失败即关闭）。公开前必须有类型和当前阶段。' },
+    { name: 'customerSummary', label: 'Customer Summary 给客户的摘要', type: 'TEXT', icon: 'IconMessage',
+      description: 'D139：客户在门户里看到的项目说明（英文）。别写内部判断。' },
+    { name: 'targetDate', label: 'Target Date 目标日期', type: 'DATE', icon: 'IconCalendarDue' },
+  ],
+
+  // ── D140：项目类型 + 阶段模板 ──────────────────────────────────────
+  projectType: [
+    { name: 'typeCode', label: 'Type Code 类型代号', type: 'TEXT', icon: 'IconHash', isUnique: true,
+      description: 'D140：稳定代号（如 OEM-PROGRAM）。**唯一** —— 种子脚本重跑、门户新建都靠它认出「是同一个类型」。' },
+    { name: 'description', label: 'Description 说明', type: 'TEXT', icon: 'IconFileDescription' },
+    { name: 'isActive', label: 'Is Active 在用', type: 'BOOLEAN', icon: 'IconToggleLeft', defaultValue: true,
+      description: 'D140：停用 = 不能再给新项目选它；已经在用的项目不受影响。还有在跑的项目时网关拒绝停用。' },
+  ],
+
+  projectTypeStage: [
+    { ...rel('projectType', '阶段', 'IconListNumbers'), name: 'projectType', label: 'Project Type 所属类型', icon: 'IconTemplate' },
+    { name: 'stageOrder', label: 'Order 顺序', type: 'NUMBER', icon: 'IconSortAscendingNumbers',
+      description: 'D140：阶段顺序（1 起）。**不用系统的 position** —— 那是界面上拖出来的显示顺序。' },
+    { name: 'nameZh', label: 'Name (zh) 中文名', type: 'TEXT', icon: 'IconLanguage',
+      description: 'D140：内部看的中文名。客户永远只看 name（英文）。' },
+    { name: 'stageKey', label: 'Stage Key 阶段键', type: 'TEXT', icon: 'IconKey',
+      description: 'D140：类型内稳定的键（种子模板里 = projectStage 的枚举值），改名不变。' },
+    { name: 'isActive', label: 'Is Active 在用', type: 'BOOLEAN', icon: 'IconToggleLeft', defaultValue: true,
+      description: 'D140：删阶段 = 置 false。某个项目正停在这一阶段时网关拒绝（stage_in_use）。' },
+  ],
+
+  // ── D139：项目进展（一条一行，只追加 + 软删）──────────────────────────
+  projectUpdate: [
+    { ...rel('project', '项目进展', 'IconTimeline'), name: 'project', label: 'Project 所属项目', icon: 'IconClipboardList' },
+    { ...rel('projectTypeStage', '进展', 'IconTimeline'), name: 'stage', label: 'Stage 阶段', icon: 'IconProgress',
+      description: 'D140：这条进展发生在哪个阶段。必须是项目那个类型下的阶段（网关挡）。' },
+    { name: 'kind', label: 'Kind 类型', type: 'SELECT', icon: 'IconCategory', options: PROJECT_UPDATE_KINDS,
+      description: 'D139：stageChange 只由网关在换阶段时自动写，门户建不了。' },
+    { name: 'occurredAt', label: 'Occurred At 发生时间', type: 'DATE_TIME', icon: 'IconClock' },
+    { name: 'datePrecision', label: 'Date Precision 时间精度', type: 'SELECT', icon: 'IconCalendar', options: DATE_PRECISIONS,
+      description: 'D139：day = 只知道哪一天，存成当天正午 UTC —— 欧洲任何时区显示都落在同一天。' },
+    { name: 'initiator', label: 'Initiator 发起方', type: 'TEXT', icon: 'IconUserUp' },
+    { name: 'recipient', label: 'Recipient 接收方', type: 'TEXT', icon: 'IconUserDown' },
+    { name: 'summary', label: 'Summary 内部摘要', type: 'TEXT', icon: 'IconNotes',
+      description: 'D139：内部的。客户看不到。' },
+    { name: 'result', label: 'Result 结果', type: 'TEXT', icon: 'IconCheck',
+      description: 'D139：内部的。客户看不到。' },
+    { name: 'customerVisible', label: 'Customer Visible 客户可见', type: 'BOOLEAN', icon: 'IconEye', defaultValue: false,
+      description: 'D139：**只认 true** —— 空值 = 不给客户看（失败即关闭）。' },
+    { name: 'customerMessage', label: 'Customer Message 给客户的话', type: 'TEXT', icon: 'IconMessage',
+      description: 'D139：🔴 **客户唯一能看到的正文**（英文）。其余各栏都是内部的。' },
+    { name: 'authorName', label: 'Author 门户操作人', type: 'TEXT', icon: 'IconUserEdit',
+      description: 'D139：门户里是谁写的（门户 admin 用户名）。不是 contributor —— 门户账号不进 CRM（规则 5）。' },
+    { name: 'clientId', label: 'Client ID 幂等键', type: 'TEXT', icon: 'IconKey', isUnique: true,
+      description: 'D139：门户生成的这条进展的 id。网关写入前先按它查 —— 重试永远不会多出一条。' },
   ],
 
   workItem: [

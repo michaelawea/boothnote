@@ -132,6 +132,8 @@ if (!scenarioIds.size) {
   process.exit(0);
 }
 
+// ⚠️ projectUpdates（D139）不在这里：它没有 recordedBy（门户账号不进 CRM），场景验收也不建它。
+//    它跟着项目走 —— 项目改到真人名下之后，purge-test-records 就不会去反查它。
 const PLURALS = ['visits', 'projects', 'workItems', 'projectDocs', 'supportCases', 'productFitments', 'intelValues'];
 const move = [];
 for (const plural of PLURALS) {

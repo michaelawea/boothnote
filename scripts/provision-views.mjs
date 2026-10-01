@@ -141,7 +141,11 @@ const SPEC = {
 
   // ── D59 · 项目执行链 ────────────────────────────────────────────
   project: {
-    indexFields: ['projectCode', 'name', 'projectStage', 'company', 'plannedSop', 'budget', 'ownerTeam'],
+    // D139/D140：门户那几列跟在后面 —— 前七列是 D59 的执行链，顺序不动
+    indexFields: [
+      'projectCode', 'name', 'projectStage', 'company', 'plannedSop', 'budget', 'ownerTeam',
+      'projectType', 'currentStage', 'projectStatus', 'portalVisible', 'targetDate',
+    ],
     views: [
       {
         name: '按阶段',
@@ -153,6 +157,22 @@ const SPEC = {
         why: '定点之后的执行看板。和商机那个是两回事：这里是「怎么交付」。',
       },
     ],
+  },
+
+  // ── D139/D140 · 客户项目进度（门户管；侧边栏上不出现，从项目记录点进来）──
+  // 只列正向字段。反向关系名是 Twenty 从中文 label 音译的，没回读过的一个都不写。
+  projectUpdate: {
+    // 🔴 customerVisible 紧挨着 customerMessage —— 一眼分得清哪句话客户看得见
+    indexFields: ['name', 'project', 'kind', 'stage', 'occurredAt', 'customerVisible', 'customerMessage', 'authorName'],
+    views: [],
+  },
+  projectType: {
+    indexFields: ['name', 'typeCode', 'description', 'isActive'],
+    views: [],
+  },
+  projectTypeStage: {
+    indexFields: ['name', 'projectType', 'stageOrder', 'nameZh', 'stageKey', 'isActive'],
+    views: [],
   },
 
   workItem: {

@@ -216,6 +216,15 @@ for (const pid of targets.get('projects') ?? []) {
     if (!targets.has('projectDocs')) targets.set('projectDocs', new Set());
     targets.get('projectDocs').add(x.id);
   }
+  // D139：项目进展同理（门户写的；它没有 recordedBy，只能按项目反查）
+  const u = await call(
+    'GET',
+    `/rest/projectUpdates?filter=${encodeURIComponent(`projectId[eq]:${pid}`)}&limit=200`,
+  ).catch(() => null);
+  for (const x of u?.data?.projectUpdates ?? []) {
+    if (!targets.has('projectUpdates')) targets.set('projectUpdates', new Set());
+    targets.get('projectUpdates').add(x.id);
+  }
 }
 
 // ── 测试**新建**的客户（导进去的 56 家一个都不动）──────────────────
@@ -296,14 +305,33 @@ const humanContribIds = new Set(
   contributors.filter((c) => HUMANS.has(c.userCode)).map((c) => c.id),
 );
 const spared = [];
+/** 子记录 → 它挂的项目。项目被挡下时，挂在它下面的子记录也不能删（下面那一步）。 */
+const parentOf = new Map();
+const keptProjects = new Set();
 for (const [plural, set] of targets) {
   for (const id of [...set]) {
     const r = await call('GET', `/rest/${plural}/${id}?depth=1`).catch(() => null);
     const rec = r?.data?.[plural.replace(/ies$/, 'y').replace(/s$/, '')] ?? r?.data;
+    const pid = rec?.projectId ?? rec?.project?.id;
+    if (pid && plural !== 'projects') parentOf.set(`${plural}/${id}`, pid);
     const by = rec?.recordedBy?.id;
     if (by && humanContribIds.has(by)) {
       set.delete(id);
+      if (plural === 'projects') keptProjects.add(id);
       spared.push(`${plural}/${String(id).slice(0, 8)}（recordedBy=真人）`);
+    }
+  }
+}
+// D139：projectUpdate 没有 recordedBy，上面那道判不了它 —— 它是谁的，看它挂的项目是谁的。
+// 项目被挡下（真人的）却把它下面的进展删掉，等于删了真人的东西。
+if (keptProjects.size) {
+  for (const [plural, set] of targets) {
+    for (const id of [...set]) {
+      const pid = parentOf.get(`${plural}/${id}`);
+      if (pid && keptProjects.has(pid)) {
+        set.delete(id);
+        spared.push(`${plural}/${String(id).slice(0, 8)}（挂在被挡下的真人项目下）`);
+      }
     }
   }
 }
@@ -322,7 +350,7 @@ for (const id of orphanEvents) {
 }
 if (orphanEvents.length) console.log(`  ✓ timelineActivities（${orphanEvents.length} 条）`);
 // 🔴 **子在前，父在后。** 项目下面挂着线程和文档，反过来删会被外键挡住。
-const ORDER = ['workItems', 'projectDocs', 'visits', 'productFitments', 'supportCases', 'intelValues', 'opportunities', 'projects'];
+const ORDER = ['workItems', 'projectDocs', 'projectUpdates', 'visits', 'productFitments', 'supportCases', 'intelValues', 'opportunities', 'projects'];
 // 不在 ORDER 里的排最后（认不出的对象最不可能是别人的父）
 const rank = (k) => (ORDER.indexOf(k) < 0 ? ORDER.length : ORDER.indexOf(k));
 const ordered = [...targets.entries()].sort((a, b) => rank(a[0]) - rank(b[0]));

@@ -17,12 +17,13 @@
  * ── 删什么 / 留什么 ────────────────────────────────────────────────
  *
  *   删（Twenty）：拜访 · 选型情报 · 情报取值 · 商机 · 售后 · 项目 · 任务线程 ·
- *                 项目文档 · Timeline 事件 · **不在 56 家名单里的客户**
+ *                 项目文档 · 项目进展（D139）· Timeline 事件 · **不在 56 家名单里的客户**
  *   删（boothnote）：  inbox · thread · thread_message · staging · attachment ·
  *                 attachment_text · agent_run · intel_field_log · 音频文件
  *   留：          56 家客户名单（`data/accounts.json`）· 竞品名单 supplier ·
  *                 情报清单 intelItem · 录入人 contributor · 联系人 person ·
- *                 `app_user` 账号
+ *                 项目类型 + 类型阶段（D140，门户配的模板）· `app_user` 账号
+ *   ⚠️ 门户里建的项目（D139）也是 `projects`，**一样会被删** —— 门户上线之后跑这个之前先想清楚。
  *
  * 🔴 **`inbox` 的只增不改在这里被临时关掉**（§4.2 第 2 条）。
  *    那条纪律护的是「展会现场说过的话不可再生」—— 而展会还没开，
@@ -138,6 +139,7 @@ const listAll = async (plural) => {
 const WIPE = [
   ['projectDocs',     '项目文档'],
   ['workItems',       '任务线程'],
+  ['projectUpdates',  '项目进展'],   // D139 —— 挂在项目下，必须排在 projects 前面
   ['projects',        '项目'],
   ['productFitments', '产品选型情报'],
   ['intelValues',     '情报取值'],
@@ -158,6 +160,9 @@ const WIPE = [
 const KEEP = [
   ['suppliers',    '竞品/供应商名单'],
   ['intelItems',   '情报清单项'],
+  // D140：类型和阶段是**模板**不是录入 —— 门户 admin 配的，清空录入数据不该连它一起带走
+  ['projectTypes',      '项目类型'],
+  ['projectTypeStages', '类型阶段'],
   ['contributors', '录入人'],
   ['people',       '联系人'],
 ];

@@ -79,7 +79,7 @@ units() {
   # ⚠️ 新加零依赖的测试文件，**必须往这张单子里加一行**。
   #    2026-08-03 发现 window.test.ts 写了但从来没被跑过 —— 逐个列出来的代价就是这个，
   #    但通配符的代价更大（会把要真库的 api.test.ts 卷进来，本地永远红）。
-  head "单元 · 网关（密码 / 查重 / 决策窗口 / timeline / 看板链接 / 情报缺口 / 项目编号 / 删除清单 / agent 路由）"
+  head "单元 · 网关（密码 / 查重 / 决策窗口 / timeline / 看板链接 / 情报缺口 / 项目编号 / 删除清单 / agent 路由 / 门户项目）"
   into services/gateway node --test \
       src/__tests__/auth.test.ts \
       src/__tests__/match.test.ts \
@@ -94,7 +94,8 @@ units() {
       src/__tests__/lab.test.ts \
       src/__tests__/router.test.ts \
       src/__tests__/chat.test.ts \
-      src/__tests__/survey.test.ts
+      src/__tests__/survey.test.ts \
+      src/__tests__/portalModel.test.ts
 
   # agent 从 2026-08-05 起是独立目录（issue #17）—— 它的测试跟着它走。
   # ⚠️ cwd 仍然是 services/gateway：node_modules 在那儿，agent 靠祖先目录找到它。

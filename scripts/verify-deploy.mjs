@@ -132,6 +132,21 @@ check(
   '空的话「这家还缺什么」一直显示「清单还没配内容」—— 需求 1 整个不成立（T36）',
 );
 
+// D140：门户建项目要先选类型。一个在用类型都没有（或有类型但阶段全停了）时，
+// 门户那一屏是空的而且不报错 —— 和 issue #2 / T36 同一个形状，所以在这里卡住。
+// 布尔一律按 `=== true` 读（空值 = 没启用），和网关、门户同一条规则。
+const activeTypes = (await listAll('projectTypes')).filter((t) => t.isActive === true);
+const activeStages = (await listAll('projectTypeStages')).filter((s) => s.isActive === true);
+const usableTypes = activeTypes.filter((t) =>
+  activeStages.some((s) => (s.projectTypeId ?? s.projectType?.id) === t.id),
+);
+check(
+  '项目类型（在用且带在用阶段）',
+  usableTypes.length,
+  usableTypes.length > 0,
+  '门户里建项目时没有类型可选（D140）—— seed-project-types.mjs 没跑，或者类型/阶段全被停用了',
+);
+
 const scored = ours.filter((c) => c.intelCompleteness != null);
 check(
   '算过完整度的客户',

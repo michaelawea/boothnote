@@ -139,6 +139,8 @@ export GATEWAY_AUDIO_DIR="$AUDIO_DIR"
 export ADMIN_TOKEN="itest-admin-token-$$"
 # 钉钉渠道那一档同理（T93）：secret 留空 = 渠道 503，出站 ticker 也不跳
 export CHANNEL_DINGTALK_SECRET="itest-channel-secret-$$"
+# 订单门户那一档（D139）同理：留空 = /portal/* 503，真 HTTP 那两档整个 skip
+export PORTAL_SECRET="itest-portal-secret-$$"
 # 实验室 agent（T94）**故意不设自己的 secret** —— 生产上默认就是和上面那个共用，
 # 测试要走的就是那条路径（有一条用例拿同一把钥匙打两个端点）。
 # 同步等待压到 1 秒：一次性环境里模型必然失败，没必要每条用例都等 12 秒
@@ -183,7 +185,8 @@ FAILED=0
 #
 # 顺带：两条都要跑完再算总账（`&&` 会让第一条红时第二条整个不跑，
 # 那样一次只能看见一半的失败）。
-( cd services/gateway && node --test ${PASSTHRU[@]+"${PASSTHRU[@]}"} src/__tests__/channels-api.test.ts src/__tests__/lab-api.test.ts ) || FAILED=1
+# portal-api.test.ts 不碰 /admin，可以和渠道那两个并行（D139）
+( cd services/gateway && node --test ${PASSTHRU[@]+"${PASSTHRU[@]}"} src/__tests__/channels-api.test.ts src/__tests__/lab-api.test.ts src/__tests__/portal-api.test.ts ) || FAILED=1
 ( cd services/gateway && node --test ${PASSTHRU[@]+"${PASSTHRU[@]}"} src/__tests__/api.test.ts ) || FAILED=1
 
 # ── --with-twenty 时把建出来的 CRM 记录清掉 ─────────────────────────

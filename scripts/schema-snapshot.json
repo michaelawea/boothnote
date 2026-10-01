@@ -8,6 +8,9 @@
     "productFitment",
     "project",
     "projectDoc",
+    "projectType",
+    "projectTypeStage",
+    "projectUpdate",
     "supplier",
     "supportCase",
     "visit",
@@ -120,17 +123,23 @@
     "project": {
       "budget": "CURRENCY",
       "company": "RELATION→company",
+      "currentStage": "RELATION→projectTypeStage",
+      "customerSummary": "TEXT",
       "openQuestions": "RICH_TEXT",
       "opportunity": "RELATION→opportunity",
       "ownerTeam": "TEXT",
       "plannedSop": "DATE",
+      "portalVisible": "BOOLEAN",
       "primaryProductName": "TEXT",
       "projectCode": "TEXT unique",
       "projectStage": "SELECT",
+      "projectStatus": "SELECT",
+      "projectType": "RELATION→projectType",
       "recordedBy": "RELATION→contributor",
       "sampleQty": "NUMBER",
       "sourceInboxId": "TEXT",
-      "specSummary": "RICH_TEXT"
+      "specSummary": "RICH_TEXT",
+      "targetDate": "DATE"
     },
     "projectDoc": {
       "attachmentId": "TEXT",
@@ -146,6 +155,33 @@
       "sourceInboxId": "TEXT",
       "version": "TEXT",
       "workItem": "RELATION→workItem"
+    },
+    "projectType": {
+      "description": "TEXT",
+      "isActive": "BOOLEAN",
+      "typeCode": "TEXT unique"
+    },
+    "projectTypeStage": {
+      "isActive": "BOOLEAN",
+      "nameZh": "TEXT",
+      "projectType": "RELATION→projectType",
+      "stageKey": "TEXT",
+      "stageOrder": "NUMBER"
+    },
+    "projectUpdate": {
+      "authorName": "TEXT",
+      "clientId": "TEXT unique",
+      "customerMessage": "TEXT",
+      "customerVisible": "BOOLEAN",
+      "datePrecision": "SELECT",
+      "initiator": "TEXT",
+      "kind": "SELECT",
+      "occurredAt": "DATE_TIME",
+      "project": "RELATION→project",
+      "recipient": "TEXT",
+      "result": "TEXT",
+      "stage": "RELATION→projectTypeStage",
+      "summary": "TEXT"
     },
     "supplier": {
       "categories": "MULTI_SELECT",
@@ -370,6 +406,12 @@
       "SOP",
       "VEHICLE_VALIDATION"
     ],
+    "project.projectStatus": [
+      "ACTIVE",
+      "CANCELLED",
+      "DONE",
+      "ON_HOLD"
+    ],
     "projectDoc.docSource": [
       "AGENT_GENERATED",
       "CUSTOMER_ATTACHMENT",
@@ -381,6 +423,16 @@
       "DRAFT",
       "IN_REVIEW",
       "SUPERSEDED"
+    ],
+    "projectUpdate.datePrecision": [
+      "DAY",
+      "MINUTE"
+    ],
+    "projectUpdate.kind": [
+      "COMMUNICATION",
+      "MILESTONE",
+      "NOTE",
+      "STAGE_CHANGE"
     ],
     "supplier.categories": [
       "ACDC_CHARGER",

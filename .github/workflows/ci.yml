@@ -87,6 +87,8 @@ jobs:
       ADMIN_TOKEN: ci-only-admin-token-not-a-secret
       # 钉钉渠道那一档（T93）同理：留空 = 渠道 503 + 整档 skip
       CHANNEL_DINGTALK_SECRET: ci-only-channel-secret-not-a-secret
+      # 订单门户那一档（D139）同理：留空 = /portal/* 503 + 真 HTTP 那两档 skip
+      PORTAL_SECRET: ci-only-portal-secret-not-a-secret
       # 实验室 agent（T94）**故意不设自己的 secret** —— 默认和上面那个共用，
       # CI 要走的就是生产那条路径。
       LAB_SYNC_WAIT_MS: '1000'
@@ -124,7 +126,7 @@ jobs:
       - name: 集成测试
         run: |
           set +e
-          node --test src/__tests__/channels-api.test.ts src/__tests__/lab-api.test.ts; a=$?
+          node --test src/__tests__/channels-api.test.ts src/__tests__/lab-api.test.ts src/__tests__/portal-api.test.ts; a=$?
           node --test src/__tests__/api.test.ts;          b=$?
           [ $a -eq 0 ] && [ $b -eq 0 ]
         working-directory: services/gateway

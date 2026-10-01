@@ -106,6 +106,9 @@ done
 head_ "可选开关"
 has ADMIN_TOKEN && ok "ADMIN_TOKEN 已设置（管理控制台开）" \
                || warn "ADMIN_TOKEN 为空 → 管理控制台整个 503 关闭（这是**安全默认**，不是故障）"
+# 订单门户的项目进度（D139）。留空 = 门户那边「Projects」菜单不出现，不是故障。
+has PORTAL_SECRET && ok "PORTAL_SECRET 已设置（/portal/* 开 —— 门户的 data/.projects-secret 必须是同一个值）" \
+                  || warn "PORTAL_SECRET 为空 → /portal/* 503 关闭（安全默认；门户的项目功能跟着关）"
 # 钉钉渠道（T93）。展会前刻意留空 —— 留空 = 这个功能不存在，不是故障。
 if has CHANNEL_DINGTALK_SECRET; then
   ok "CHANNEL_DINGTALK_SECRET 已设置（钉钉渠道开）"

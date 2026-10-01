@@ -119,6 +119,13 @@ services:
     build:
       context: .
       dockerfile: services/gateway/Dockerfile
+    ports:
+      # [本项目] D141：**只绑宿主机回环**，给同机的订单门户（宿主机上的 systemd 服务）
+      #   走 http://127.0.0.1:4000/portal/* 用 —— 它不在 compose 网络里，叫不到 gateway:4000。
+      #   🔴 不能改成 "4000:4000"：那会把网关的每个端点直接摆到公网上，绕过 Caddy。
+      #   为什么不走公网域名：Cloudflare Flexible 的回源段是明文，X-Portal-Secret 会裸奔（R16）。
+      #   公网那一侧 Caddy 把 /api/portal/* 回 404（infra/caddy/Caddyfile）。
+      - "127.0.0.1:4000:4000"
     environment:
       APP_DATABASE_URL: postgres://${PG_DATABASE_USER:-postgres}:${PG_DATABASE_PASSWORD}@db:5432/boothnote
       GATEWAY_JWT_SECRET: ${GATEWAY_JWT_SECRET}
@@ -139,6 +146,8 @@ services:
       #    但容器内是空的 —— 于是控制台永远 503、看板链接指向容器内网地址、
       #    agent 的四个开关调了等于没调。**env.ts 读什么，这里就必须有什么。**
       ADMIN_TOKEN: ${ADMIN_TOKEN:-}
+      # D139：订单门户调 /portal/* 的 secret。留空 = 整组 503。**这一行不能省** —— 省掉就是 D66 那个形状
+      PORTAL_SECRET: ${PORTAL_SECRET:-}
       # 🔴 D67：看板链接是**发到别人手机上**的，必须是公网地址。
       #    BOARD_URL 空时由 CRM_DOMAIN 推出来（协议写死 https），所以它也得传进来。
       #    上面那个 SERVER_URL=http://server:3000 只够网关自己用，发出去就是打不开。

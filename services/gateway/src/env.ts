@@ -155,6 +155,16 @@ export const env = {
    */
   adminToken: opt('ADMIN_TOKEN', ''),
 
+  /**
+   * 订单门户服务端调 `/portal/*` 时带的 `X-Portal-Secret`（D139–D142 · docs/portal-projects.md）。
+   * 🔴 **留空 = 整组 `/portal/*` 503**，和 ADMIN_TOKEN 同一条安全默认（D66）——
+   * 不配就不存在。只走请求头，绝不进 URL。
+   * 用 getter 而不是模块加载时求值：集成测试要能在同一个进程里翻它（env.test.ts 的做法）。
+   */
+  get portalSecret() {
+    return opt('PORTAL_SECRET', '');
+  },
+
   // ── 钉钉渠道（T93 · docs/dingtalk-channel.md）──────────────────────
   /**
    * 钉钉流程调 `POST /channels/dingtalk/events` 时带的 `X-Channel-Secret`。

@@ -1,4 +1,11 @@
 import { env } from './env.ts';
+import {
+  portalProjectBody,
+  projectTypeBody,
+  projectUpdateBody,
+  stageBody,
+  type ProjectPatch,
+} from './portalModel.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,17 +28,28 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *
  * `scripts/` 里那几个脚本早就有退避重试了，网关这边一直没有。补上。
  */
-const call = async (method: string, path: string, body?: unknown, attempt = 0): Promise<any> => {
+const call = async (
+  method: string,
+  path: string,
+  body?: unknown,
+  attempt = 0,
+  /**
+   * 单次请求的超时（毫秒）。**不传 = 不设超时**，和原来一模一样 —— 确认入库那条路径靠的就是这个行为。
+   * 只有门户（D139，`/portal/*`）传：门户服务端等 8 秒就改用缓存，网关没必要陪一个卡死的 Twenty 耗下去。
+   */
+  timeoutMs?: number,
+): Promise<any> => {
   const res = await fetch(`${env.twentyUrl}${path}`, {
     method,
     headers: { Authorization: `Bearer ${env.twentyKey}`, 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
+    ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
   });
 
   // 0.5s → 1s → 2s → 4s → 8s，最多 5 次。限流窗口通常一秒级，够用了。
   if (res.status === 429 && attempt < 5) {
     await sleep(500 * 2 ** attempt);
-    return call(method, path, body, attempt + 1);
+    return call(method, path, body, attempt + 1, timeoutMs);
   }
 
   const text = await res.text();
@@ -438,13 +456,30 @@ export const searchProjects = async (query: string, limit = 8): Promise<Project[
  * 现场是一个人一条条确认，实际撞不上；真撞上时上层会退回 `ready` 并留错误，
  * 人再点一次就是下一个号。**不要假设它是串行的**。
  */
-export const nextProjectCode = async (prefix: string): Promise<string> => {
+export const nextProjectCode = async (prefix: string, opts: { portal?: boolean } = {}): Promise<string> => {
   const base = prefix.trim().toUpperCase().replace(/[^A-Z0-9-]/g, '').replace(/-+$/, '');
-  const all = await call('GET', '/rest/projects?limit=200&depth=1');
+  /*
+   * 🔴 **只读这个前缀、并且翻完所有页**（review 2026-10-01）。原来是一页 `limit=200`、不排序、不过滤 ——
+   * 项目一多，第 201 个起的编号就看不见，发出去的 `-004` 可能早已存在，而撞上的后果是
+   * 入库时 `findProjectByCode` 命中别人的项目 → update 掉它（projectCode.ts ②）。
+   * `ilike`：手工建的编号大小写不可靠，下面的正则本来就是不分大小写地比。实测 2026-10-01 本地 Twenty。
+   */
+  const filter = encodeURIComponent(`projectCode[ilike]:"${base}-%"`);
+  const get = (path: string) => (opts.portal ? pcall('GET', path) : call('GET', path));
+  const re = new RegExp(`^${base}-(\\d{3})$`);
   let max = 0;
-  for (const p of all?.data?.projects ?? []) {
-    const m = String(p.projectCode ?? '').toUpperCase().match(new RegExp(`^${base}-(\\d{3})$`));
-    if (m?.[1]) max = Math.max(max, Number(m[1]));
+  let cursor: string | null = null;
+  for (let page = 0; ; page++) {
+    if (page >= 50) throw new TooManyRecords(`projects（前缀 ${base}）`, 50 * PAGE);
+    const all = await get(
+      `/rest/projects?limit=${PAGE}&depth=0&filter=${filter}` + (cursor ? `&starting_after=${encodeURIComponent(cursor)}` : ''),
+    );
+    for (const p of all?.data?.projects ?? []) {
+      const m = String(p.projectCode ?? '').toUpperCase().match(re);
+      if (m?.[1]) max = Math.max(max, Number(m[1]));
+    }
+    if (!all?.pageInfo?.hasNextPage || !all?.pageInfo?.endCursor) break;
+    cursor = all.pageInfo.endCursor;
   }
   return `${base}-${String(max + 1).padStart(3, '0')}`;
 };
@@ -1239,11 +1274,20 @@ const gql = async <T = any>(query: string, variables: Record<string, unknown>, a
     headers: { Authorization: `Bearer ${env.twentyKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ query, variables }),
   });
-  if (res.status === 429 && attempt < 5) {
+  const json: any = await res.json().catch(() => null);
+  /**
+   * 🔴 **GraphQL 的限流不是 429。** Twenty 的节流器在 GraphQL 这一侧抛的是 UserInputError ——
+   * 回包是 HTTP 200 + `errors[].extensions.subCode = "LIMIT_REACHED"`（2026-09-30 读 Twenty 源码
+   * `throttler-to-graphql-api-exception-handler` 确认；门户集成测试里真撞到过一次）。
+   * 只认 429 的话，限流会被当成「删除/恢复失败」—— 又是 §2.39 那个「限流伪装成数据问题」的形状。
+   */
+  const limited =
+    res.status === 429 ||
+    (Array.isArray(json?.errors) && json.errors.some((e: any) => e?.extensions?.subCode === 'LIMIT_REACHED'));
+  if (limited && attempt < 5) {
     await sleep(500 * 2 ** attempt);
     return gql<T>(query, variables, attempt + 1);
   }
-  const json: any = await res.json().catch(() => null);
   // 🔴 GraphQL 回 200 也可能是失败的。只看 res.ok 会把每一次错误当成功。
   if (!res.ok || json?.errors?.length) {
     throw new Error(`Twenty GraphQL → ${res.status} ${JSON.stringify(json?.errors ?? json).slice(0, 300)}`);
@@ -1260,12 +1304,15 @@ const gql = async <T = any>(query: string, variables: Record<string, unknown>, a
  * （软删其实碰不到外键，但恢复时「父先回来」仍然要靠它，所以照留。）
  *
  * `gql` 是 mutation 名里的单数 PascalCase（`deleteWorkItem` / `restoreProjectDoc`），
- * 八个的两种拼法都由 schema 内省确认过。
+ * 八个的两种拼法都由 schema 内省确认过；第九个 `projectUpdate`（D139）的 delete / restore
+ * 2026-09-30 在本地 Twenty 上实测过（软删后 REST GET 回 404、列表里消失，restore 回得来）。
  * ⚠️ **没有 `rest` 了** —— 这里一个 REST DELETE 都不发（见文件头 §2.38）。
  */
 const DELETABLE = {
   workItem: { gql: 'WorkItem' },
   projectDoc: { gql: 'ProjectDoc' },
+  // D139：门户删进展（DELETE /portal/updates/:id）。挂在项目下，所以排在 project 前面
+  projectUpdate: { gql: 'ProjectUpdate' },
   visit: { gql: 'Visit' },
   productFitment: { gql: 'ProductFitment' },
   supportCase: { gql: 'SupportCase' },
@@ -1375,3 +1422,147 @@ export const restoreRecords = async (refs: RecordRef[]): Promise<RestoreResult> 
   }
   return out;
 };
+
+/* ══════════════════════════════════════════════════════════════════
+ * 客户项目进度（D139–D142 · docs/portal-projects.md）—— 只给 `portal.ts` 用
+ *
+ * 🔴 **这是「写 Twenty 只在 commitToTwenty()」之外的第三条被允许的路**
+ *    （前两条：2C 问卷 D138、管理台 upsertContributor）。门户 admin 在门户里点的每一下
+ *    都是一次人明确发起的写入，没有「待确认」这一层可挂 —— 所以直接写，失败就回 502，
+ *    门户那边提示稍后再试（docs/gateway-contract.md 规则 4 的例外清单）。
+ *
+ * 请求体一律由 `portalModel.ts` 的纯函数拼（只放给了的字段、SELECT 转 UPPER_SNAKE、
+ * create 时不带空关系）—— 这里只管发出去、读回来。
+ * ══════════════════════════════════════════════════════════════════ */
+
+/** 门户这条路上每个 Twenty 请求的超时。门户自己 8 秒就放弃改用缓存，这里多给一点余量。 */
+const PORTAL_TIMEOUT_MS = 10_000;
+const pcall = (method: string, path: string, body?: unknown) => call(method, path, body, 0, PORTAL_TIMEOUT_MS);
+
+/** Twenty REST 一页最多 200 条（多要也只给 200，实测 2026-10-01）。 */
+const PAGE = 200;
+
+/**
+ * 分页读全读到了上限。**单独一个类型** —— 门户那边要能和「Twenty 暂时连不上」分开（`snapshot_too_large`）：
+ * 这一种不会自己好，躲在「用缓存」后面的话，所有人看到的都是一份永远不再更新的旧数据，而且没人知道。
+ */
+export class TooManyRecords extends Error {
+  readonly plural: string;
+  readonly limit: number;
+  constructor(plural: string, limit: number) {
+    super(`Twenty ${plural}：${limit} 条还没读完 —— 不截断，停在这里`);
+    this.plural = plural;
+    this.limit = limit;
+  }
+}
+
+/**
+ * 分页读全一个对象（每页 200，按 `starting_after` 游标往下翻）。
+ *
+ * 🔴 **超过页数上限就抛，绝不静默截断。** 截断的后果是「第 N+1 个项目不存在」——
+ * 门户那边看不出区别，而对某个客户来说他的项目就是凭空没了。
+ * ⚠️ 页是串行翻的（游标翻页只能这样），所以每页尽量大：原来 60 一页，1000 条进展就是 17 次往返。
+ */
+export const listAllRecords = async (plural: string, filter?: string, maxPages = 50): Promise<any[]> => {
+  const out: any[] = [];
+  let cursor: string | null = null;
+  for (let page = 0; page < maxPages; page++) {
+    const r = await pcall(
+      'GET',
+      `/rest/${plural}?limit=${PAGE}&depth=0` +
+        (filter ? `&filter=${encodeURIComponent(filter)}` : '') +
+        (cursor ? `&starting_after=${encodeURIComponent(cursor)}` : ''),
+    );
+    out.push(...(r?.data?.[plural] ?? []));
+    if (!r?.pageInfo?.hasNextPage || !r?.pageInfo?.endCursor) return out;
+    cursor = r.pageInfo.endCursor;
+  }
+  throw new TooManyRecords(plural, maxPages * PAGE);
+};
+
+/** 按 id 读一条。**不存在（含已软删）→ null**，别的错照抛（门户那边据此回 502）。 */
+export const getRecord = async (plural: string, singular: string, id: string): Promise<any | null> => {
+  try {
+    const r = await pcall('GET', `/rest/${plural}/${encodeURIComponent(id)}?depth=0`);
+    return r?.data?.[singular] ?? null;
+  } catch (e) {
+    if (/ → 404 /.test((e as Error).message)) return null;
+    throw e;
+  }
+};
+
+/**
+ * **所有**客户（门户绑账号要能选到任何一家）。
+ * ⚠️ 和 `listCompanies()` 不是一回事：那个只要带 accountCode 的（给 PWA 和 agent），
+ * 会把 END_USER 这类没有代号的客户滤掉。
+ */
+export const listAllCompanies = () => listAllRecords('companies');
+
+const created = (r: any, singular: string) => {
+  const rec = r?.data?.[`create${singular}`] ?? r?.data;
+  if (!rec?.id) throw new Error(`Twenty 建 ${singular} 没回 id`);
+  return rec;
+};
+const updated = (r: any, singular: string) => r?.data?.[`update${singular}`] ?? r?.data ?? null;
+
+export const createProjectType = async (i: Parameters<typeof projectTypeBody>[0]) =>
+  created(await pcall('POST', '/rest/projectTypes', projectTypeBody(i)), 'ProjectType');
+
+export const updateProjectType = async (id: string, i: Parameters<typeof projectTypeBody>[0]) => {
+  const body = projectTypeBody(i);
+  if (!Object.keys(body).length) return null;
+  return updated(await pcall('PATCH', `/rest/projectTypes/${id}`, body), 'ProjectType');
+};
+
+export const createProjectTypeStage = async (i: Parameters<typeof stageBody>[0]) =>
+  created(await pcall('POST', '/rest/projectTypeStages', stageBody(i)), 'ProjectTypeStage');
+
+export const updateProjectTypeStage = async (id: string, i: Parameters<typeof stageBody>[0]) => {
+  const body = stageBody(i);
+  if (!Object.keys(body).length) return null;
+  return updated(await pcall('PATCH', `/rest/projectTypeStages/${id}`, body), 'ProjectTypeStage');
+};
+
+/** 门户建项目。`projectCode` 必须有（它是 isUnique，空串也会撞）—— 调用方负责生成。 */
+export const createPortalProject = async (i: ProjectPatch & { projectCode: string; name: string }) =>
+  created(await pcall('POST', '/rest/projects', portalProjectBody(i)), 'Project');
+
+/**
+ * 按编号精确找一个项目（原始行，depth=0）。门户建项目「发出去了、没等到回包」之后用它认领：
+ * Twenty 可能已经提交了那一行（超时只是我们这边不等了）—— 不认领就会再建第二个。
+ */
+export const findPortalProjectByCode = async (code: string): Promise<any | null> => {
+  const r = await pcall('GET', `/rest/projects?filter=${encodeURIComponent(`projectCode[eq]:"${code}"`)}&limit=1&depth=0`);
+  return r?.data?.projects?.[0] ?? null;
+};
+
+/** 只改门户那几列（`portalProjectBody` 里根本没有别的列）。空补丁不发请求。 */
+export const updatePortalProject = async (id: string, patch: ProjectPatch) => {
+  const body = portalProjectBody(patch);
+  if (!Object.keys(body).length) return null;
+  return updated(await pcall('PATCH', `/rest/projects/${id}`, body), 'Project');
+};
+
+export const createProjectUpdate = async (i: Parameters<typeof projectUpdateBody>[0]) =>
+  created(await pcall('POST', '/rest/projectUpdates', projectUpdateBody(i, 'create')), 'ProjectUpdate');
+
+export const updateProjectUpdate = async (id: string, i: Parameters<typeof projectUpdateBody>[0]) => {
+  const body = projectUpdateBody(i, 'patch');
+  if (!Object.keys(body).length) return null;
+  return updated(await pcall('PATCH', `/rest/projectUpdates/${id}`, body), 'ProjectUpdate');
+};
+
+/**
+ * 按幂等键找进展。⚠️ **软删掉的找不到，但它的 clientId 仍然占着唯一索引**（2026-09-30 实测：
+ * 删掉之后用同一个 clientId 再建 → 400「A duplicate entry was detected」）—— 调用方要能分辨这一种。
+ */
+export const findProjectUpdateByClientId = async (clientId: string): Promise<any | null> => {
+  const r = await pcall(
+    'GET',
+    `/rest/projectUpdates?filter=${encodeURIComponent(`clientId[eq]:${clientId}`)}&limit=1&depth=0`,
+  );
+  return r?.data?.projectUpdates?.[0] ?? null;
+};
+
+/** Twenty 的唯一约束冲突（projectCode / clientId / typeCode）。报文是它定的，只认这一句。 */
+export const isDuplicateEntry = (e: unknown) => /duplicate entry/i.test(String((e as Error)?.message ?? e));
