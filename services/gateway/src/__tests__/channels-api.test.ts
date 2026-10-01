@@ -461,8 +461,10 @@ describe('钉钉渠道 · 出站回执（真 webhook 往返）', { skip: !RUN },
         values ('dingtalk', ${`msg:${randomUUID()}`}, 'message', ${group}, ${`old-${SUFFIX}`}, ${u!.id}, ${i!.id})`;
       // 先插 staging（非 ready），再记旧键，最后才放成 ready —— 免得 ticker 抢在旧键落库之前
       const [st] = await sql<Array<{ id: string }>>`
+        -- ⚠️ 不带 companyCode：带了的话出站要读客户名单，一次性环境里 Twenty 是死端口 →
+        --    汇报素材取不到、退避重试，**旧键认不认都发不出去** —— 这条断言就恒真了（变异测试抓出来的）
         insert into staging (inbox_id, status, extracted) values (${i!.id}, 'extracting',
-          ${sql.json({ recordType: 'fitment', companyCode: 'ALPIN', category: 'INVERTER', modelName: 'X' } as never)})
+          ${sql.json({ recordType: 'fitment', category: 'INVERTER', modelName: 'X' } as never)})
         returning id`;
       await sql`
         insert into channel_event (channel, event_key, kind, inbox_id)
