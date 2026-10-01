@@ -145,6 +145,10 @@ export PORTAL_SECRET="itest-portal-secret-$$"
 # 测试要走的就是那条路径（有一条用例拿同一把钥匙打两个端点）。
 # 同步等待压到 1 秒：一次性环境里模型必然失败，没必要每条用例都等 12 秒
 export LAB_SYNC_WAIT_MS="${LAB_SYNC_WAIT_MS:-1000}"
+# 钉钉自动入库（D143）：倒计时压到 8 秒（生产 60 秒），撤回链接指回这个一次性网关
+# （测试把 /api/a/<token> 换成 /a/<token> 直接打 —— 生产上是 Caddy 剥掉 /api 前缀）
+export CHANNEL_AUTOCOMMIT_SECONDS="${CHANNEL_AUTOCOMMIT_SECONDS:-8}"
+export CAPTURE_URL="${GATEWAY_URL}"
 # 默认不烧模型（占位 key 下 agent 也跑不出东西来）。
 #
 # 🔴 **但要能被覆盖 —— 因为 CI 是开着 agent 跑的，写死就再也复现不了 CI。**

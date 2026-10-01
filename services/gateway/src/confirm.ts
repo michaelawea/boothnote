@@ -70,6 +70,11 @@ import { parseDecisionWindow } from './window.ts';
 
 export type ConfirmPayload = {
   companyId: string;
+  /**
+   * 钉钉自动入库的「这一次排队」的标识（D143 · D148）。撤回链接绑的是它 ——
+   * 撤回之后人说「入库 #N」重新排，旧汇报里那条链接就撤不掉新的倒计时。
+   */
+  queueId?: string;
   fields?: Record<string, unknown>;
   /**
    * 人选的「接在这条售后上」（手册 P23 / D57）。
@@ -154,9 +159,96 @@ export const requestConfirm = async (
   const at = new Date(Date.now() + env.confirmDelayMs);
   await sql`
     update staging set status = 'confirming', confirm_after = ${at},
-      confirm_payload = ${sql.json(payload as never)}, confirm_by = ${userId}, error = null
+      confirm_payload = ${sql.json(payload as never)}, confirm_by = ${userId}, error = null,
+      withdrawn_at = null
     where id = ${stagingId}`;
   return { commitAt: at.toISOString() };
+};
+
+/**
+ * 钉钉来源的自动入库排队（D143）—— 不经人确认，所以**守卫全写在同一条 `where` 里**。
+ *
+ * 和 `requestConfirm` 分开，是因为 PWA 那条路的语义不同（人点的；`failed` 也能确认；
+ * 状态由端点逐条判过）。这里没有人在场，任何一格不对都只能**不排**：
+ *   · 只排 `ready` —— pending / extracting 说明还有一版在跑，confirming / committing 已经排过；
+ *   · 被取代的不排（同一条对话里有更新的一版，旧版入库 = 第二份）；
+ *   · 撤回过的不排（D148：撤回后要人说 `入库 #N` 才重新排，`force` 那一格）；
+ *   · 软删 / 速记删过的不排。
+ *
+ * 🔴 **两段式**：这一步只**占位**（`confirm_after` 写成一天以后，心跳认领不到），
+ *    汇报真的送到了再 `armAutoCommit` 开始倒计时；没送到就 `disarmAutoCommit` 撤掉。
+ *    一步到位的话，「排上了 → 进程在发送前被杀」会留下一条没人看见、到点自己入库的排队
+ *    （D143「发送成功才开始倒计时」）。占位行重启时由 `recoverUnarmedAutoCommits` 收回。
+ * 返回 null = 没排上（调用方如实说，不假装在倒计时）。
+ */
+export const AUTO_PLACEHOLDER_MS = 24 * 60 * 60_000;
+
+export const queueAutoCommit = async (
+  stagingId: string,
+  userId: string,
+  payload: ConfirmPayload & { queueId: string },
+  force = false,
+): Promise<{ queueId: string } | null> => {
+  const placeholder = new Date(Date.now() + AUTO_PLACEHOLDER_MS);
+  const rows = await sql`
+    update staging set status = 'confirming', confirm_after = ${placeholder},
+      confirm_payload = ${sql.json(payload as never)}, confirm_by = ${userId}, error = null,
+      withdrawn_at = null
+    where id = ${stagingId} and status = 'ready' and superseded_by is null
+      and record_deleted_at is null and note_deleted_at is null
+      ${force ? sql`` : sql`and withdrawn_at is null`}
+    returning id`;
+  return rows.length ? { queueId: payload.queueId } : null;
+};
+
+/** 汇报送到了：倒计时从**这一刻**开始。返回真正写入的时间点；null = 这一次排队已经不在了。 */
+export const armAutoCommit = async (stagingId: string, queueId: string, seconds: number): Promise<Date | null> => {
+  const at = new Date(Date.now() + seconds * 1000);
+  const rows = await sql`
+    update staging set confirm_after = ${at}
+    where id = ${stagingId} and status = 'confirming' and confirm_payload->>'queueId' = ${queueId}
+    returning id`;
+  return rows.length ? at : null;
+};
+
+/** 汇报没送到（或中途出错）：撤掉这一次排队。只认自己那一次（queueId），不误伤别人排的。 */
+export const disarmAutoCommit = async (stagingId: string, queueId: string): Promise<boolean> => {
+  const rows = await sql`
+    update staging set status = 'ready', confirm_after = null, confirm_payload = null, confirm_by = null
+    where id = ${stagingId} and status = 'confirming' and confirm_payload->>'queueId' = ${queueId}
+      and confirm_after > now()
+    returning id`;
+  return rows.length > 0;
+};
+
+/**
+ * 撤回（D148 链接）：只撤**这一次排队**、只在倒计时内。原子 —— 和心跳认领（`claimDue`）
+ * 抢同一行时只有一边赢。撤回留痕 `withdrawn_at`：出站据此不再自己排它。
+ */
+export const withdrawAutoCommit = async (stagingId: string, queueId: string): Promise<boolean> => {
+  const rows = await sql`
+    update staging set status = 'ready', confirm_after = null, confirm_payload = null, confirm_by = null,
+      withdrawn_at = now()
+    where id = ${stagingId} and status = 'confirming' and confirm_payload->>'queueId' = ${queueId}
+      and confirm_after > now()
+    returning id`;
+  return rows.length > 0;
+};
+
+/**
+ * 启动时收回「占了位、没开始倒计时」的排队 —— 上一个进程在「排上」和「汇报送到」之间被杀。
+ * 收回成 ready，它的汇报账键还没记（只在送达后记），出站下一跳会**重新汇报**一次。
+ * 判据是占位的特征（confirm_after 远在未来），不是「有没有 queued 事件」：
+ * PWA 里确认的那些本来就没有 queued 事件。
+ */
+export const recoverUnarmedAutoCommits = async (): Promise<number> => {
+  const rows = await sql`
+    update staging set status = 'ready', confirm_after = null, confirm_payload = null, confirm_by = null
+    where status = 'confirming' and confirm_payload ? 'queueId'
+      and confirm_after > now() + interval '12 hours'
+    returning id`;
+  if (rows.length) console.log(`  ↩️ 收回 ${rows.length} 条没来得及发出汇报的钉钉自动入库排队（会重新汇报）`);
+  return rows.length;
 };
 
 /**
@@ -971,6 +1063,18 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
   const known = new Map<string, { object: string; id: string; name: string }>();
   for (const m of Array.isArray(prevRow?.created) ? (prevRow!.created as any[]) : []) {
     if (m?.id) known.set(String(m.id), m);
+  }
+  /**
+   * 🔴 D108 原地更新：上一版建的那几条**归这一行管了** —— 它们必须进这一行的清单。
+   * 漏了的话：下面的交接把老那一行清空，而新这一行只记了「这一轮新长出来的」（made），
+   * 首版建的拜访 / 选型情报就从所有清单里消失了 —— 看板删不到它们，
+   * 下一次改口换客户也软删不到它们（CRM 里出第二份）。客户变了的那条路（movedCompany）
+   * 已经把它们软删掉了，不该再收进来。
+   */
+  if (usingInherited && !movedCompany) {
+    for (const m of Array.isArray(inherited?.createdRecords) ? (inherited!.createdRecords as any[]) : []) {
+      if (m?.id) known.set(String(m.id), m);
+    }
   }
   for (const m of made) known.set(m.id, m);
 

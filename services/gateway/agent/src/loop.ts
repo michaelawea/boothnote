@@ -11,6 +11,7 @@ import {
   type PreparedAttachments,
 } from './attachments.ts';
 import { systemPrompt } from './prompt.ts';
+import { committedBase } from './inherit.ts';
 import { loadPlaybooks } from './skills.ts';
 import {
   keepThinking,
@@ -429,8 +430,9 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
       thread_id: string | null;
       user_id: string;
       edited_text: string | null;
+      source: string | null;
     }>
-  >`select i.text, i.audio_path, i.audio_mime, i.user_id,
+  >`select i.text, i.audio_path, i.audio_mime, i.user_id, i.source,
            -- 人事后在手机上改定的正文（issue #15/#16）。inbox.text 一个字没动。
            s.edited_text,
            -- 「一键发给 AI」是事后补送的：那时 inbox 已经落库、而它只增不改
@@ -530,16 +532,51 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
   let inheritedFrom: string | null = null;
   let inheritedRecordType: string | null = null;
   if (row.thread_id) {
+    /**
+     * D147：钉钉来源接管的是一版**已入库**的（`replaces`）时，起点只能是
+     * 「比那一版更新的未入库版」或者「那一版入库时的值」—— 绝不能是**比它更旧**的、
+     * 还活着的某一版（撤回过 / 交了白卷没被取代的）：从那儿起步，redo 的整包 PATCH
+     * 会把已入库的更正打回旧值。评审抓出来的。PWA 那条路一个字不变。
+     */
+    const [own] = await sql<Array<{ owner_id: string | null; owner_at: Date | null }>>`
+      select s.replaces->>'stagingId' as owner_id, o.created_at as owner_at
+      from staging s left join staging o on o.id = (s.replaces->>'stagingId')::uuid
+      where s.id = ${st.id}`;
+    const takeover = row.source === 'dingtalk' && own?.owner_id && own.owner_at ? own : null;
     const [prev] = await sql<Array<{ id: string; extracted: any }>>`
       select id, extracted from staging
       where thread_id = ${row.thread_id} and id <> ${st.id}
         and status in ('ready','failed') and superseded_by is null
+        ${takeover ? sql`and created_at > ${takeover.owner_at}` : sql``}
       order by created_at desc limit 1`;
     if (prev && Object.keys(prev.extracted ?? {}).length) {
       await sql`update staging set extracted = ${sql.json(prev.extracted as never)} where id = ${st.id}`;
       inheritedFrom = prev.id;
       inheritedRecordType = typeof prev.extracted?.recordType === 'string' ? prev.extracted.recordType : null;
       console.log(`  ↳ 继承同一条对话上一轮的提案（${prev.id}）`);
+    } else if (takeover) {
+      /**
+       * ── D147：这一轮接管的是一版**已入库**的（`staging.replaces`，D108）────
+       *
+       * 钉钉来源自动入库之后（D143），「#128 型号是 2000 的」改的就是 CRM 里那几条记录：
+       * 网关在接上这句话时已经把交接意向写进了 `replaces`，入库时走 redo 原地更新。
+       * 而 redo 的 PATCH 对没提到的格子写的是 `?? null` —— 这一轮不从那一版起步的话，
+       * 只交了「型号」一格，其余的会被**清空**。
+       *
+       * 起点 = 那一版入库时真正写进去的值：`extracted` 叠上人改过的 `confirm_payload.fields`
+       * （和 `commitToTwenty` 里 `f` 的算法同一条，否则人在核对卡上改过的值会被打回 agent 原值）。
+       * ⚠️ 不标 `inheritedFrom` —— 已入库的那一版不能被 loop 标成 superseded，
+       *    所有权在**入库成功那一刻**才转移（D108 / §2.47②）。
+       */
+      const [owner] = await sql<Array<{ extracted: any; confirm_payload: any }>>`
+        select extracted, confirm_payload from staging
+        where id = ${takeover.owner_id} and status = 'confirmed'`;
+      const base = committedBase(owner ?? null);
+      if (base) {
+        await sql`update staging set extracted = ${sql.json(base as never)} where id = ${st.id}`;
+        inheritedRecordType = typeof base.recordType === 'string' ? base.recordType : null;
+        console.log(`  ↳ 接管已入库的那一版（${takeover.owner_id}），从它入库时的值起步`);
+      }
     }
   }
 
@@ -607,6 +644,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
       suppliers,
       pushPlaybooks,
       resumed: history.length > 0,
+      source: row.source ?? null,
     });
 
     const prompt = [
@@ -822,6 +860,16 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
   const missedProject = wantsProject && !ex.project && !fallback;
   if (missedProject) {
     console.warn(`  ⚠️ 判成 ${ex.recordType} 却没有项目提案：${st.id}`);
+  }
+
+  /**
+   * 兜底标记（`agentSkipped`）只描述「上一轮 AI 没整理出来」—— 这一轮真交了字段，它就不再成立。
+   * 不清的话它会被之后每一版继承（propose_fields 是合并语义），钉钉那边的确信度门槛
+   * 永远按「AI 没整理出结构化字段」挡住这一条，理由还是假的。
+   */
+  if (ctx.proposed) {
+    await sql`update staging set extracted = extracted - 'agentSkipped'
+              where id = ${st.id} and extracted ? 'agentSkipped'`;
   }
 
   await sql`

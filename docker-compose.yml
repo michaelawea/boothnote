@@ -179,6 +179,9 @@ services:
       # ── Agent 路由器（D127）：统一入口，服务端分流。──
       # off = 回到 D127 之前的行为（统一入口每条都进速记）—— 回滚开关，不用回滚代码。
       CHANNEL_ROUTER: ${CHANNEL_ROUTER:-on}
+      # 钉钉来源自动入库的倒计时（D143）：汇报发出后这么多秒写入 CRM，期间可点撤回链接。
+      # 0 = 关掉自动入库（回滚开关）：汇报照发，要人说「入库 #N」。
+      CHANNEL_AUTOCOMMIT_SECONDS: ${CHANNEL_AUTOCOMMIT_SECONDS:-60}
       ROUTER_MODEL: ${ROUTER_MODEL:-}
       ROUTER_TIMEOUT_MS: ${ROUTER_TIMEOUT_MS:-4000}
       # 日常助手（D128）：路由器的第三个去向（测试/打招呼/杂项，单次直答）

@@ -4,26 +4,22 @@ import type { FastifyInstance } from 'fastify';
 import { env } from '../env.ts';
 import { sql } from '../db.ts';
 import { hashPassword } from '../auth.ts';
-import { ingestNote, saveBlob } from '../ingest.ts';
+import { ingestNote } from '../ingest.ts';
 import { enqueue } from '../../agent/src/index.ts';
 import { normalizeDingtalk, deriveClientId, type ChannelEvent } from './payload.ts';
 import { gateCheck, GATE_REJECT_TEXT } from './gate.ts';
-import { decideRoute, type RouteContext } from './routing.ts';
 import { classifyAgent } from './router.ts';
+import { decideFollow, namesOtherCompany } from './followup.ts';
+import { attach, attachByRef, downloadImagesThenEnqueue, park, runCommand } from './followRoute.ts';
+import { openQuestionsOf, recentItemOf } from './items.ts';
+import { listCompanies } from '../twenty.ts';
 import { runLabForEvent } from './lab.ts';
 import { runChatForEvent } from './chat.ts';
-import {
-  md,
-  renderAck,
-  renderHelp,
-  renderDuplicate,
-  renderConfirmHint,
-  renderError,
-  type DingMessage,
-} from './render.ts';
+import { md, renderAck, renderHelp, renderDuplicate, renderError, type DingMessage } from './render.ts';
 
 export { startChannelTicker } from './outbound.ts';
 export { registerLabChannel } from './lab.ts';
+export { registerActLinks } from './act.ts';
 
 /** 给 `/agent/health` 和启动横幅用。两个 bot 各有各的开关。 */
 export const channelStatus = () => ({
@@ -31,6 +27,8 @@ export const channelStatus = () => ({
   lab: env.labSecret ? 'on' : 'off',
   // D127：统一入口的服务端分流。off = 每条都进速记（D127 之前的行为）
   router: env.routerEnabled ? 'on' : 'off',
+  // D143：钉钉来源自动入库的倒计时秒数（0 = 关着，要人说「入库 #N」）
+  autoCommitSeconds: env.dingtalkAutoCommitSeconds,
 });
 
 /**
@@ -130,55 +128,6 @@ const logEvent = async (
     on conflict (channel, event_key) do nothing`;
 };
 
-/** 路由上下文：该 (会话, 发送人) 最近一条对话 + 活动时刻 + agent 是否在等回答。 */
-const routeContext = async (ev: ChannelEvent, userId: string): Promise<RouteContext> => {
-  const [last] = await sql<Array<{ tid: string }>>`
-    select i.thread_id as tid
-    from channel_event e join inbox i on i.id = e.inbox_id
-    where e.channel = 'dingtalk' and e.conversation_key = ${ev.conversationKey}
-      and e.app_user_id = ${userId} and e.kind = 'message' and i.thread_id is not null
-    order by e.created_at desc limit 1`;
-  if (!last) return { lastThreadId: null, lastActivityAt: null, lastAskedAt: null };
-
-  const [act] = await sql<Array<{ at: Date | null }>>`
-    select max(created_at) as at from thread_message where thread_id = ${last.tid}`;
-  /**
-   * 「在等回答」的判据用**最近一条 agent 消息以问号收尾**当代理 ——
-   * loop 在 `waiting_user` 时收尾写的正是那句追问。不依赖 agent_run 的内部列。
-   */
-  const [ask] = await sql<Array<{ at: Date; text: string }>>`
-    select created_at as at, text from thread_message
-    where thread_id = ${last.tid} and role = 'agent'
-    order by created_at desc limit 1`;
-  const asked = ask && /[?？]\s*$/.test(String(ask.text ?? '').trim());
-  return {
-    lastThreadId: last.tid,
-    lastActivityAt: act?.at ?? null,
-    lastAskedAt: asked ? ask!.at : null,
-  };
-};
-
-/** 图片下载完**再**进 agent 队列 —— 先 enqueue 的话 agent 开跑时附件还没落库。 */
-const downloadImagesThenEnqueue = async (inboxId: string, images: string[]) => {
-  for (const url of images.slice(0, 5)) {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) continue;
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (!buf.length || buf.length > env.attachmentInlineMaxBytes) continue;
-      const mime = (res.headers.get('content-type') ?? 'image/jpeg').split(';')[0]!.trim();
-      const ext = mime.includes('png') ? 'png' : mime.includes('gif') ? 'gif' : 'jpg';
-      const rel = await saveBlob(buf, `dingtalk.${ext}`);
-      await sql`
-        insert into attachment (inbox_id, kind, filename, mime, bytes, path)
-        values (${inboxId}, 'image', ${`dingtalk.${ext}`}, ${mime}, ${buf.length}, ${rel})`;
-    } catch (e) {
-      console.warn(`  ⚠️ 钉钉图片没下载成（${String(e).slice(0, 80)}）—— 这条速记照常处理`);
-    }
-  }
-  enqueue(inboxId);
-};
-
 export const registerChannels = (app: FastifyInstance) => {
   app.post('/channels/dingtalk/events', async (req, reply) => {
     // 留空 = 渠道不存在（D66 式安全默认）。这是唯一一个非 200 的分支 —— 配置期才会撞到。
@@ -205,16 +154,58 @@ export const registerChannels = (app: FastifyInstance) => {
       const user = await ensureChannelUser('dingtalk', ev.sender);
       if (!user.isActive) return ok('final', md('这个账号已被停用，找 维护者。', ev.sender));
 
-      // ── 命令层（§4 ⓪）：命令是「按按钮」，不落 inbox ──────────────────
-      const t = ev.text.trim();
-      if (/^(帮助|help|用法)$/i.test(t)) return ok('final', renderHelp(ev.sender));
-      if (/^(确认|撤销)([\s。！!]|$)/.test(t)) return ok('final', renderConfirmHint(ev.sender));
+      const clientId = deriveClientId(ev);
+
+      // 重放（流程重试）：这份报文已经落过 inbox → 复述现状，什么都不再做
+      const [seen] = await sql<Array<{ id: string; status: string }>>`
+        select i.id, s.status from inbox i join staging s on s.inbox_id = i.id
+        where i.client_id = ${clientId} and i.user_id = ${user.id}`;
+      if (seen) return ok('final', renderDuplicate(ev.sender, seen.status), seen.id);
+
+      /**
+       * ── 二轮对话（D146）：命令 / 这句接在哪一条上 ────────────────────
+       * 钉钉每次 @ 是独立请求、没有会话/消息 ID —— 「这句在回答哪个问题、在改哪一条」
+       * 只能由这里判。规则在 followup.ts（纯函数）：整句命令 → #N → 记：/问： →
+       * 待回答问题 → 更正词 → 其余交给路由器新开。
+       */
+      const [openQs, recent] = await Promise.all([
+        openQuestionsOf(ev.conversationKey, user.id),
+        recentItemOf(ev.conversationKey, user.id),
+      ]);
+      let mentionsOther = false;
+      if (openQs.length === 1) {
+        // 「回答」点名了**别家**客户 → 那是一条新情报，不是在答这道题（那一条还没客户时，点名就是回答）
+        const [qs] = await sql<Array<{ code: string | null }>>`
+          select nullif(extracted->>'companyCode', '') as code from staging where id = ${openQs[0]!.stagingId}`;
+        mentionsOther = namesOtherCompany(ev.text, qs?.code ?? null, await listCompanies().catch(() => []));
+      }
+      const follow = decideFollow(ev.text, {
+        openQuestions: openQs,
+        recent,
+        mentionsOtherCompany: mentionsOther,
+        hasAttachments: ev.images.length > 0,
+      });
+      if (follow.kind === 'command') {
+        const r = await runCommand(follow.command, ev, user.id, clientId, renderHelp);
+        return ok(r.kind, r.ding, r.noteId);
+      }
 
       if (rateLimited(ev.sender))
         return ok('final', md('这一小时内记得有点多，歇一会儿再 @ 我（限频保护）。', ev.sender));
 
-      const ctx = await routeContext(ev, user.id);
-      const clientId = deriveClientId(ev);
+      if (follow.kind === 'ambiguous') {
+        const refs = follow.refNos.map((n) => `#${n ?? '?'}`).join('、');
+        const r = await park(ev, user.id, clientId, `你有 ${follow.refNos.length} 条在等回答（${refs}），这句不知道是在答哪一条。请带上编号再说一遍，比如「#${follow.refNos[0] ?? 'N'} ${ev.text.slice(0, 20)}」。`);
+        return ok(r.kind, r.ding, r.noteId);
+      }
+
+      if (follow.kind === 'item') {
+        const r =
+          follow.via === 'ref'
+            ? await attachByRef(ev, user.id, clientId, follow.refNo)
+            : await attach(ev, user.id, clientId, { threadId: follow.threadId, refNo: follow.refNo }, follow.via);
+        return ok(r.kind, r.ding, r.noteId);
+      }
 
       /**
        * ── Agent 路由器（D127）：这一句是「要记录」还是「要答案」────────────
@@ -233,7 +224,9 @@ export const registerChannels = (app: FastifyInstance) => {
           : await classifyAgent({
               text: ev.text,
               hasAttachments: ev.images.length > 0,
-              captureAskedAt: ctx.lastAskedAt,
+              // D146：回答 bot 的追问已经由上面的「待回答问题」接走了；走到这里的是
+              // 不像回答的那些（像提问 / 点名了别家客户 / 带图）—— 让路由器自己判
+              captureAskedAt: null,
             });
       await logEvent('route', ev, {
         eventKey: `route:${clientId}`,
@@ -265,8 +258,7 @@ export const registerChannels = (app: FastifyInstance) => {
         return ok('final', md(GATE_REJECT_TEXT, ev.sender));
       }
 
-      // 会话路由（§4）：默认新开，续写只认明确信号
-      const route = decideRoute(ev.text, ctx, new Date());
+      // 走到这里 = 不接在任何一条上（D146 的规则已经判过）→ 新开一条
       const r = await ingestNote({
         userId: user.id,
         clientId,
@@ -274,7 +266,7 @@ export const registerChannels = (app: FastifyInstance) => {
         companyCode: null,
         visitLabel: null,
         deviceCreatedAt: ev.sentAt,
-        threadId: route.threadId,
+        threadId: null,
         toAgent: true, // 钉钉渠道的每一条都是「说给 AI 听」的 —— 采集即抽取
         source: 'dingtalk',
         files: [],

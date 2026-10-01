@@ -179,6 +179,17 @@ export const env = {
    */
   dingtalkDefaultWebhook: opt('DINGTALK_DEFAULT_WEBHOOK', ''),
   /**
+   * 钉钉来源的自动入库倒计时（D143，维护者 2026-10-01 定 60 秒）。
+   * 从**汇报发送成功**那一刻起算；期间点撤回链接 = 取消排队，CRM 一个字没写。
+   * `0` = 关掉自动入库（回滚开关）：汇报照发，状态写「未入库」，要人说 `入库 #N`。
+   */
+  get dingtalkAutoCommitSeconds() {
+    const n = Number(opt('CHANNEL_AUTOCOMMIT_SECONDS', '60'));
+    if (!Number.isFinite(n) || n < 0) return 60;
+    // 下限 5 秒：比一次投递还短的倒计时，心跳会在汇报送到之前就认领 —— 撤回链接从来没机会生效
+    return n === 0 ? 0 : Math.max(5, Math.floor(n));
+  },
+  /**
    * 连接平台的**流程 webhook**（`connector.dingtalk.com/webhook/flow/…`）触发用的关键词。
    *
    * 🔴 那种触发器**扫整个请求体找关键词，找不到就静默丢弃** ——

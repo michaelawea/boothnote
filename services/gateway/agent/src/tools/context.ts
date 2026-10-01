@@ -35,6 +35,14 @@ export type SkillContext = {
    * prompt 据此告诉模型「上下文已经在了，不用再 get_thread」—— 省一步。
    */
   resumed: boolean;
+  /**
+   * 这条速记从哪个入口来的（`inbox.source`：pwa / dingtalk / …）。
+   * D147：钉钉来源不注册 `propose_intel_field` —— 那个工具在 agent 跑的过程中就写 Twenty，
+   * 而钉钉来源是「60 秒后自动入库、期间可撤回」（D143），撤回取消不掉一个已经写进去的字段。
+   * **必填**（null = 不知道 → 按 PWA 处理）：可选的话，loop 漏传它不会有任何报错，
+   * 而钉钉来源会悄悄拿回那个写 CRM 的工具 —— 让 tsc 替我们记着。
+   */
+  source: string | null;
 
   /** 护栏②的计数器：一条速记最多造 1 个情报字段。 */
   intelFieldsCreated: number;

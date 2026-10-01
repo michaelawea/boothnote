@@ -25,7 +25,9 @@ export { warnIfColumnSwitchOn } from './intel-field.ts';
 export const buildSkills = (ctx: SkillContext): Skill[] => [
   ...readSkills(ctx),
   ...writeSkills(ctx),
-  intelFieldSkill(ctx),
+  // D147：钉钉来源不注册 —— 它在跑的过程中就写 Twenty，60 秒撤回取消不掉它。
+  // 能力边界靠「清单里有没有」，不靠 prompt 写「请不要」（文件头那条）。
+  ...(ctx.source === 'dingtalk' ? [] : [intelFieldSkill(ctx)]),
   // D59：定点之后那条链（项目 / 任务线程 / 文档）。
   // 仍然全在 Ring 1+2 —— 加了三个对象不等于放松边界，Ring 3 一条没变。
   ...projectSkills(ctx),

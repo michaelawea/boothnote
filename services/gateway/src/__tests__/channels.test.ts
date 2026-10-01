@@ -13,10 +13,9 @@ process.env.CAPTURE_URL = 'https://capture.test';
 
 const { normalizeDingtalk, deriveClientId, stripMentions } = await import('../channels/payload.ts');
 const { gateRules, gateCheck, GATE_REJECT_TEXT } = await import('../channels/gate.ts');
-const { decideRoute, isCorrection } = await import('../channels/routing.ts');
-const { renderReceipt, renderAck, md, clampText, isFlowWebhook, outboundBody } = await import(
-  '../channels/render.ts'
-);
+const { isCorrection } = await import('../channels/routing.ts');
+const { renderAck, md, clampText, isFlowWebhook, outboundBody } = await import('../channels/render.ts');
+const { renderReport } = await import('../channels/report.ts');
 
 const BODY = {
   message: {
@@ -176,42 +175,10 @@ describe('L1 门卫：完整判定（fail-open 是承重性质）', () => {
   });
 });
 
-describe('会话路由：默认新开（代价不对称判据）', () => {
-  const now = new Date('2026-08-17T10:00:00Z');
-  const min = (n: number) => new Date(now.getTime() - n * 60_000);
-
-  it('没有历史 → 新开', () => {
-    assert.deepEqual(decideRoute('随便说点什么', { lastThreadId: null, lastActivityAt: null, lastAskedAt: null }, now), {
-      threadId: null,
-      via: 'new',
-    });
-  });
-
-  it('bot 追问 10 分钟内 → 接回原对话（在回答问题）', () => {
-    const r = decideRoute('现在用的是 Voltaro', { lastThreadId: 't1', lastActivityAt: min(10), lastAskedAt: min(10) }, now);
-    assert.deepEqual(r, { threadId: 't1', via: 'answer' });
-  });
-
-  it('追问超 30 分钟 → 不再算回答，新开', () => {
-    const r = decideRoute('现在用的是 Voltaro', { lastThreadId: 't1', lastActivityAt: min(40), lastAskedAt: min(40) }, now);
-    assert.equal(r.via, 'new');
-  });
-
-  it('「更正 …」2 小时内 → 接回原对话走改口', () => {
-    const r = decideRoute('更正：不是 Alpin 是 Rosenfeld', { lastThreadId: 't1', lastActivityAt: min(90), lastAskedAt: null }, now);
-    assert.deepEqual(r, { threadId: 't1', via: 'correction' });
-  });
-
-  it('「更正 …」超 2 小时 → 新开', () => {
-    const r = decideRoute('更正：不是 Alpin 是 Rosenfeld', { lastThreadId: 't1', lastActivityAt: min(150), lastAskedAt: null }, now);
-    assert.equal(r.via, 'new');
-  });
-
-  it('🔴 窗口内的普通新内容**不**续写 —— A 录完 Alpin 两分钟后录 Heron，是两条', () => {
-    const r = decideRoute('Heron 想要电池报价', { lastThreadId: 't1', lastActivityAt: min(2), lastAskedAt: null }, now);
-    assert.equal(r.via, 'new');
-  });
-
+/**
+ * 「这句接在哪条上」的规则表在 followup.test.ts（D146）；这里只留更正词本身的识别。
+ */
+describe('更正词', () => {
   it('isCorrection 认得住几种说法', () => {
     for (const t of ['更正：xx', '不对，是 Rosenfeld', '改一下客户', '上一条错了', '说错了，是 2000W'])
       assert.equal(isCorrection(t), true, t);
@@ -219,58 +186,23 @@ describe('会话路由：默认新开（代价不对称判据）', () => {
   });
 });
 
-describe('render：回执规格', () => {
-  const base = {
-    sender: 'u_demo_0001',
-    status: 'ready',
-    partial: false,
-    error: null,
-    title: 'Alpin 逆变器升级 3000W',
-    extracted: { recordType: 'fitment', category: 'INVERTER', project: { projectCode: 'ALPIN-2026-001' } },
-    companyCode: 'ALPIN',
-    suggestedCompany: null,
-    askText: null,
-  };
-
-  it('ready 回执：待确认 · @发送人 · ≤8 行 · 🔴 绝不出现「已入库」', () => {
-    const m = renderReceipt(base);
-    const text = m.markdown!.text;
-    assert.match(text, /待确认/);
-    assert.doesNotMatch(text, /已入库/);
-    // 「≤8 行」说的是回执正文。末尾那个 `@<userid>` 是 md() 统一拼的通知位（§2.52⑥），不算进来。
-    assert.ok(text.replace(/\n\n@\S+$/, '').split('\n').length <= 8);
-    assert.deepEqual(m.at, { atUserIds: ['u_demo_0001'], isAtAll: false });
-    assert.match(text, /ALPIN-2026-001/);
-    assert.match(text, /去确认入库/);
+describe('render：ack 规格（D145：状态先行、不用 emoji）', () => {
+  it('ack 要诚实：没配回执 webhook 就明说「不会自动入库」，不假装稍后有汇报', () => {
+    const t = renderAck('u', true).markdown!.text;
+    assert.match(t, /汇报发不回来，也不会自动入库/);
+    assert.match(t, /去 PWA 看/);
+    assert.match(renderAck('u', false).markdown!.text, /整理完会汇报/);
   });
 
-  it('failed 回执：说清没处理成 + 原话没丢', () => {
-    const text = renderReceipt({ ...base, status: 'failed', error: '转写超时' }).markdown!.text;
-    assert.match(text, /没处理成/);
-    assert.match(text, /转写超时/);
-    assert.match(text, /原话已保存/);
+  it('D127：ack 要说清转给了谁 —— 两种情形都得点名「速记」，第一个词是状态', () => {
+    for (const d of [true, false]) {
+      const t = renderAck('u', d).markdown!.text;
+      assert.match(t, /^\*\*已接收\*\* · 转给速记/);
+    }
   });
 
-  it('agent 提议的新客户要标出来「只提议」；没客户要说「确认时要选」', () => {
-    const a = renderReceipt({ ...base, companyCode: null, suggestedCompany: 'Neumeyer' }).markdown!.text;
-    assert.match(a, /Neumeyer（名单里没有，只提议）/);
-    const b = renderReceipt({ ...base, companyCode: null, extracted: {} }).markdown!.text;
-    assert.match(b, /未识别 —— 确认时要选/);
-  });
-
-  it('追问那一行带「回复请 @我」—— bot 收不到不 @ 它的答案', () => {
-    const text = renderReceipt({ ...base, askText: '现在在位的是哪家？' }).markdown!.text;
-    assert.match(text, /还缺.*现在在位的是哪家？.*回复请 @我/);
-  });
-
-  it('ack 要诚实：没配回执 webhook 就明说「去 PWA 看」，不假装稍后有回执', () => {
-    assert.match(renderAck('u', true).markdown!.text, /去 PWA 看/);
-    assert.match(renderAck('u', false).markdown!.text, /回执稍后发回群里/);
-  });
-
-  it('D127：ack 要说清转给了谁 —— 两种情形都得点名「速记」', () => {
-    assert.match(renderAck('u', false).markdown!.text, /速记/);
-    assert.match(renderAck('u', true).markdown!.text, /速记/);
+  it('ack 里没有 emoji', () => {
+    for (const d of [true, false]) assert.doesNotMatch(renderAck('u', d).markdown!.text, /\p{Extended_Pictographic}/u);
   });
 });
 
@@ -327,17 +259,19 @@ describe('@ 那个人：markdown 的 at 列表光放着不算数（§2.52⑥ 真
     assert.match(m.markdown!.text, /回答太长/);
   });
 
-  it('回执正文是 #### 开头的，@ 串只能在末尾，不能顶掉标题行', () => {
-    const text = renderReceipt({
+  it('汇报正文是 #### 开头的，@ 串只能在末尾，不能顶掉标题行', () => {
+    const text = renderReport({
       sender: 'u1',
-      status: 'ready',
-      partial: false,
-      error: null,
-      title: 'Alpin 逆变器升级 3000W',
-      extracted: { recordType: 'fitment' },
-      companyCode: 'ALPIN',
+      refNo: 128,
+      version: 1,
+      extracted: { recordType: 'fitment', summary: 'Alpin 逆变器升级 3000W' },
+      companyLabel: 'Alpin（ALPIN）',
       suggestedCompany: null,
-      askText: null,
+      diff: { lines: [], companyChanged: false },
+      plan: [],
+      warn: [],
+      questions: [],
+      state: { kind: 'held', hard: [], soft: ['缺品类'] },
     }).markdown!.text;
     assert.match(text, /^#### /);
     assert.match(text, /@u1$/);

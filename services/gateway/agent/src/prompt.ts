@@ -57,8 +57,15 @@ export const systemPrompt = (ctx: SkillContext): string =>
     '   🔴🔴 **recordType 是 project 或 followup 时，这一轮必须再调一次 `propose_project`** ——',
     '   `propose_fields` 装不下项目；先 get_projects 查新旧；细节全在 project 手册里。',
     '',
-    '5. 现有字段装不下的事，用 propose_intel_field 当场造一个字段装它。',
-    '   一条速记最多造一个，造之前先想想能不能塞进 propose_fields。',
+    ...(ctx.source === 'dingtalk'
+      ? [
+          // D147：钉钉来源没注册 propose_intel_field —— 提它的话模型会去调一个不存在的工具
+          '5. 现有字段装不下的事，原话写进 details，别丢。',
+        ]
+      : [
+          '5. 现有字段装不下的事，用 propose_intel_field 当场造一个字段装它。',
+          '   一条速记最多造一个，造之前先想想能不能塞进 propose_fields。',
+        ]),
     '6. ask_user **一轮最多问一个问题** —— 展会现场每多问一句，销售就少录一条。',
     '',
     '# 硬要求',

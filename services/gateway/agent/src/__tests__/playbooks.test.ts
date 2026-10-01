@@ -29,6 +29,7 @@ const ctx = (over: Partial<Parameters<typeof newContext>[0]> = {}) =>
     maxSteps: 8,
     pushPlaybooks: [],
     resumed: false,
+    source: null,
     ...over,
   });
 

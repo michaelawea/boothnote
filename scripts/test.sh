@@ -95,6 +95,9 @@ units() {
       src/__tests__/router.test.ts \
       src/__tests__/chat.test.ts \
       src/__tests__/survey.test.ts \
+      src/__tests__/commitGate.test.ts \
+      src/__tests__/followup.test.ts \
+      src/__tests__/report.test.ts \
       src/__tests__/portalModel.test.ts
 
   # agent 从 2026-08-05 起是独立目录（issue #17）—— 它的测试跟着它走。

@@ -87,5 +87,6 @@ export const runChatForEvent = async (
   if (!fresh) return { ding: md('这句我刚回过了（重复投递），不再答一遍。', ev.sender) };
 
   const answer = await chatOnce(ev.text, deps);
-  return { ding: md(answer ? `💬 ${answer}` : `💬 ${CHAT_FALLBACK}`, ev.sender) };
+  // D145：说清是谁在回 —— 速记 / 实验室的 ack 都写了去向，日常助手的直答前面也得有
+  return { ding: md(`**日常助手**：${answer ?? CHAT_FALLBACK}`, ev.sender) };
 };

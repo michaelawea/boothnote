@@ -22,6 +22,7 @@ import {
 import { sanitizeFieldEdits } from '../../../src/confirm.ts';
 import { runAgent, type ModelBinding, type Skill } from '../runtime.ts';
 import { FORBIDDEN_TOOL_NAMES, TOOL_NAMES, buildSkills, newContext } from '../tools/index.ts';
+import { committedBase } from '../inherit.ts';
 
 /**
  * agent 的单元测试。**一行网络请求都不发** —— 模型换成 pi-ai 自带的 fauxProvider。
@@ -45,6 +46,7 @@ const ctx = () =>
     maxSteps: 8,
     pushPlaybooks: [],
     resumed: false,
+    source: null,
   });
 
 // ── ② 工具清单快照 ─────────────────────────────────────────────────
@@ -56,6 +58,17 @@ describe('工具清单 —— 能力边界的唯一执行机制', () => {
     // 改这个数字的那一刻，就得回头看一眼 docs/agent.md 里的圈层图还对不对。
     // 2026-08-05：14 → 15，加了 read_skill（D72，Ring 1 只读手册）。docs/agent.md 已同步。
     assert.equal(names.length, 15, `工具数量变了（${names.length}）—— 顺手更新 docs/agent.md`);
+  });
+
+  it('🔴 D147：钉钉来源不注册 propose_intel_field —— 它跑的过程中就写 Twenty，60 秒撤回取消不掉', async () => {
+    const dd = buildSkills({ ...ctx(), source: 'dingtalk' }).map((s) => s.name).sort();
+    assert.deepEqual(dd, [...TOOL_NAMES].filter((n) => n !== 'propose_intel_field').sort());
+    // PWA（和不传来源的老调用方）一个字不变
+    assert.ok(buildSkills({ ...ctx(), source: 'pwa' }).some((s) => s.name === 'propose_intel_field'));
+    // prompt 也不能再提它 —— 提了模型会去调一个不存在的工具，白烧一步
+    const { systemPrompt } = await import('../prompt.ts');
+    assert.doesNotMatch(systemPrompt({ ...ctx(), source: 'dingtalk' }), /propose_intel_field/);
+    assert.match(systemPrompt(ctx()), /propose_intel_field/);
   });
 
   it('Ring 3 的工具一个都没注册', () => {
@@ -311,5 +324,21 @@ describe('渠道链只能从上游到下游', () => {
       );
     }
     assert.ok((ACCOUNT_TYPES as readonly string[]).includes('OEM_SUB_GROUP'));
+  });
+});
+
+// ── D147：接管已入库的那一版时，从哪儿起步 ───────────────────────────
+describe('committedBase：从「入库时真正写进去的值」起步', () => {
+  it('人在核对卡上改过的值盖过 agent 读出来的（和 commitToTwenty 的 f 同一条算法）', () => {
+    const b = committedBase({
+      extracted: { modelName: 'PowerFlex 3000', stage: 'CONTACTED', category: 'INVERTER' },
+      confirm_payload: { fields: { stage: 'SAMPLE_TEST' } },
+    });
+    assert.deepEqual(b, { modelName: 'PowerFlex 3000', stage: 'SAMPLE_TEST', category: 'INVERTER' });
+  });
+  it('兜底标记不往下传；空的 / 不存在的返回 null', () => {
+    assert.deepEqual(committedBase({ extracted: { agentSkipped: true, summary: 'x' } }), { summary: 'x' });
+    assert.equal(committedBase({ extracted: {} }), null);
+    assert.equal(committedBase(null), null);
   });
 });

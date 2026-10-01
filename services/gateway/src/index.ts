@@ -57,6 +57,7 @@ import {
   sanitizeFieldEdits,
   resumeConfirming,
   startConfirmTicker,
+  recoverUnarmedAutoCommits,
 } from './confirm.ts';
 import { computeGaps } from './gaps.ts';
 import { registerSurveys, resumeSurveys, startSurveyTicker, surveyHealth } from './surveys.ts';
@@ -86,6 +87,7 @@ import { ingestNote } from './ingest.ts';
 import {
   registerChannels,
   registerLabChannel,
+  registerActLinks,
   startChannelTicker,
   channelStatus,
 } from './channels/route.ts';
@@ -1797,6 +1799,8 @@ registerAdmin(app);
 
 // ── 钉钉渠道（T93）。secret 留空 = 整个渠道不存在，下面两行都是空转。──
 registerChannels(app);
+// ── 钉钉汇报里的撤回链接（D148）：GET 只出页面，只有 POST 撤回。没签发过链接就全是 404。──
+registerActLinks(app);
 // ── 实验室 agent（T94）：群里的第二个 bot，独立 secret、空工具表。──
 registerLabChannel(app);
 // ── 2C 问卷（D138）：不走 agent，网关直接写 Twenty。──
@@ -1813,6 +1817,11 @@ warnIfColumnSwitchOn();
  */
 await reapStaleRuns();
 await resumePending();
+/**
+ * D143 两段式排队的收尾：上一个进程「排上了、汇报还没送到」时被杀，留下的占位（confirm_after 在一天后）
+ * 收回成 ready → 出站下一跳重新汇报。必须在心跳起来之前 —— 占位本来就认领不到，但别让它多活一秒。
+ */
+await recoverUnarmedAutoCommits();
 await resumeConfirming();
 startConfirmTicker();
 await resumeSurveys();
@@ -1845,7 +1854,10 @@ console.log(
 );
 console.log(`   确认    延迟 ${env.confirmDelayMs / 1000} 秒提交，期间可撤销`);
 console.log(
-  `   钉钉    ${env.dingtalkSecret ? `开（回执兜底 webhook ${env.dingtalkDefaultWebhook ? '已配' : '未配'}）` : '关（CHANNEL_DINGTALK_SECRET 留空）'}`,
+  `   钉钉    ${env.dingtalkSecret ? `开（回执兜底 webhook ${env.dingtalkDefaultWebhook ? '已配' : '未配'}` +
+    // D143：自动入库的秒数和撤回链接能不能签发 —— 后者没配时自动入库会自己停掉（不可撤回的倒计时不排）
+    ` · 自动入库 ${env.dingtalkAutoCommitSeconds ? `${env.dingtalkAutoCommitSeconds}s` : '关'}` +
+    ` · 撤回链接 ${env.captureUrl ? '可签发' : '⚠️ 未配 CAPTURE_URL —— 不会自动入库'}）` : '关（CHANNEL_DINGTALK_SECRET 留空）'}`,
 );
 // D127 路由器：和 D125 同一条判据 —— 「配错了完全不报错、只是行为不对」的配置要露在横幅上
 console.log(

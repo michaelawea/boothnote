@@ -1,18 +1,11 @@
 import { env } from '../env.ts';
-import {
-  CATEGORY_LABELS,
-  RECORD_TYPE_LABELS,
-  STAGE_LABELS,
-  SEVERITY_LABELS,
-  CASE_STATUS_LABELS,
-} from '../../agent/src/enums.ts';
 
 /**
  * 回执渲染（docs/dingtalk-channel.md §2 的模板）—— **纯函数，一份实现喂两条腿**：
  * 同步响应的 `ding` 和出站 webhook 发的是同一族格式（text/markdown）。
  *
- * 规格（可测）：markdown ≤ 8 行 · 永远 @ 发送人 ·
- * **「已入库」只在 confirmed 之后出现** —— ready 阶段只能说「待确认」。
+ * 规格（可测）：永远 @ 发送人。agent 跑完之后的汇报在 report.ts（D145：状态先行、拟写入详尽）；
+ * **「已入库」只在 confirmed 之后出现** —— 倒计时里只能说「待入库」。
  */
 
 export type DingMessage = {
@@ -95,10 +88,6 @@ export const isFlowWebhook = (url: string): boolean =>
 export const outboundBody = (ding: DingMessage, webhookUrl: string): unknown =>
   isFlowWebhook(webhookUrl) ? { keyword: env.channelFlowKeyword, ding } : ding;
 
-const label = (map: Record<string, string>, v: unknown): string | null => {
-  const s = String(v ?? '').trim();
-  return s ? (map[s] ?? s) : null;
-};
 
 /**
  * 同步 ack。`degraded` = 这个群还没配出站 webhook —— 不许假装稍后有回执。
@@ -108,103 +97,39 @@ const label = (map: Record<string, string>, v: unknown): string | null => {
 export const renderAck = (sender: string, degraded: boolean): DingMessage =>
   md(
     degraded
-      ? `✍️ 已转给速记，整理中。这个群还没配回执机器人，结果请去 PWA 看${env.captureUrl ? `：${env.captureUrl}` : ''}`
-      : '✍️ 已转给速记，整理中，回执稍后发回群里。',
+      ? // 🔴 没有出站 webhook = 汇报发不出来 = **不会自动入库**（D143：发送成功才开始倒计时）
+        `**已接收** · 转给速记（新记录）\n这个群还没配回执机器人：汇报发不回来，也不会自动入库。结果去 PWA 看` +
+          (env.captureUrl ? `：${env.captureUrl}` : '。')
+      : '**已接收** · 转给速记（新记录）\n整理完会汇报：内容够完整就倒计时后自动入库，期间可撤回。',
     sender,
   );
 
 export const renderHelp = (sender: string): DingMessage =>
   md(
-    env.routerEnabled
-      ? '#### RV 助手 · 用法\n' +
-          '@ 我一句话，我自动分给背后的助手：\n' +
-          '**说事实**（拜访了谁 · 客户想要什么 · 进展）→ 速记，整理成 CRM 记录；\n' +
-          '**提问题**（参数 · 选型 · 价格 · 文档）→ 实验室助手，答案稍后发回群里；\n' +
-          '**其他杂项**（测试 · 翻译 · 顺手帮个忙）→ 日常助手直接回。\n' +
-          '分错了就在开头写「记：」或「问：」强制指定。\n' +
-          '我**只能看到 @ 我的这一条**，前面的聊天我看不见。\n' +
-          '回复「更正 …」可以改你上一条（2 小时内）。\n' +
-          (env.captureUrl ? `确认入库去 PWA：${env.captureUrl}` : '')
-      : '#### Boothnote · 用法\n' +
-          '@ 我一句话，我把它整理成 CRM 记录（客户/产品/进展说全）。\n' +
-          '我**只能看到 @ 我的这一条**，前面的聊天我看不见。\n' +
-          '回复「更正 …」可以改你上一条（2 小时内）。\n' +
-          (env.captureUrl ? `确认入库去 PWA：${env.captureUrl}` : ''),
+    '#### RV 助手 · 用法\n' +
+      (env.routerEnabled
+        ? '@我 一句话，自动分给背后的助手：\n' +
+          '- **说事实**（拜访了谁、客户想要什么、进展）→ 速记，整理成 CRM 记录\n' +
+          '- **提问题**（参数、选型、价格、文档）→ 实验室助手，答案稍后发回群里\n' +
+          '- **其他**（测试、翻译、顺手帮个忙）→ 日常助手直接回\n' +
+          '分错了就在开头写「记：」或「问：」强制指定。\n'
+        : '@我 一句话，整理成 CRM 记录（客户、产品、进展说全）。\n') +
+      '**入库**：汇报说「待入库」的，倒计时后自动写入 CRM；倒计时内点汇报里的「撤回」可取消。\n' +
+      '**修改**：@我 #编号 + 修改内容；或回答汇报里的问题（30 分钟内直接说）；或「更正 …」改你上一条（2 小时内）。\n' +
+      '**命令**：「待办」看未入库的 ·「#编号」重看一条 ·「入库 #编号」按原样入库。\n' +
+      '我**只能看到 @我 的这一条**，前面的聊天我看不见。',
     sender,
   );
-
-export type ReceiptInput = {
-  sender: string;
-  status: string; // ready / failed
-  partial: boolean;
-  error: string | null;
-  title: string | null;
-  extracted: Record<string, unknown>;
-  companyCode: string | null; // inbox 上的（人/路由定的）
-  suggestedCompany: string | null; // agent 提议的新客户 —— 只提议，不自动建
-  /** agent 停在 waiting_user 时最近那条追问。 */
-  askText: string | null;
-};
-
-/** 终稿回执（出站腿）。≤ 8 行。 */
-export const renderReceipt = (r: ReceiptInput): DingMessage => {
-  const x = r.extracted ?? {};
-  const proj = (x['project'] ?? {}) as Record<string, unknown>;
-
-  if (r.status === 'failed') {
-    return md(
-      `#### ⚠️ 这条没处理成\n` +
-        `${(r.error ?? '处理失败').slice(0, 120)}\n` +
-        `原话已保存，不会丢。${env.captureUrl ? `去 PWA 重试：${env.captureUrl}` : '可以在 PWA 里重试。'}`,
-      r.sender,
-    );
-  }
-
-  const type = label(RECORD_TYPE_LABELS as Record<string, string>, x['recordType']) ?? '速记';
-  const company =
-    r.companyCode ??
-    (String(x['companyCode'] ?? '').trim() || null) ??
-    (r.suggestedCompany ? `${r.suggestedCompany}（名单里没有，只提议）` : null);
-
-  const facts = [
-    label(CATEGORY_LABELS as Record<string, string>, x['category']),
-    String(x['supplierName'] ?? '').trim() || null,
-    String(x['productName'] ?? proj['primaryProductName'] ?? '').trim() || null,
-    label(STAGE_LABELS as Record<string, string>, x['stage']),
-    label(CASE_STATUS_LABELS as Record<string, string>, x['caseStatus']),
-    label(SEVERITY_LABELS as Record<string, string>, x['severity']),
-    String(proj['projectCode'] ?? '').trim() || null,
-  ].filter(Boolean);
-
-  const lines = [
-    `#### ✍️ ${type} · 待确认`, // 🔴 「已入库」只有 confirm 之后才许说
-    `**客户** ${company ?? '未识别 —— 确认时要选'}`,
-  ];
-  if (r.title) lines.push(`**要点** ${r.title.slice(0, 60)}`);
-  if (facts.length) lines.push(facts.slice(0, 5).join(' · '));
-  if (r.partial) lines.push('⚠️ 到了处理上限，结果可能不全');
-  if (r.askText) lines.push(`**还缺** ${r.askText.slice(0, 80)}（回复请 @我，30 分钟内有效）`);
-  lines.push(
-    `👉 ${env.captureUrl ? `[去确认入库](${env.captureUrl})` : '去 PWA 确认入库'}　回复「更正 …」可改这条`,
-  );
-  return md(lines.slice(0, 8).join('\n'), r.sender);
-};
 
 /** 幂等命中：复述现状，不重录。 */
 export const renderDuplicate = (sender: string, status: string): DingMessage =>
   md(
     status === 'confirmed'
-      ? '这条我已经收过了，而且已经确认入库。'
-      : '这条我已经收过了，正在处理/等确认中，不再重复记录。',
-    sender,
-  );
-
-export const renderConfirmHint = (sender: string): DingMessage =>
-  md(
-    `群里直接确认还没开通（V2 再开）。${env.captureUrl ? `去 PWA 确认：${env.captureUrl}` : '请去 PWA 里确认。'}`,
+      ? '这条我已经收过了，而且已经入库。'
+      : '这条我已经收过了，正在处理，不再重复记录。',
     sender,
   );
 
 /** 网关侧兜底错误 —— 永远 HTTP 200 + 一条给人看的消息，不把话语权交给流程的报错分支。 */
 export const renderError = (detail: string): DingMessage =>
-  md(`⚠️ 网关这边出了点问题（${detail.slice(0, 80)}），这条先没记上。稍后再试或找 维护者。`);
+  md(`**未处理**：网关这边出了问题（${detail.slice(0, 80)}），这条先没记上。稍后再试或找 维护者。`);

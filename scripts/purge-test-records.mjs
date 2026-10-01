@@ -39,6 +39,7 @@ const HUMANS = new Set(['alex', 'dev-admin', 'jonas', 'lena']);
 /** 测试账号的前缀。集成测试与各种验证脚本建的都长这样。 */
 const TEST_PREFIXES = [
   't-admin-', 't-user-',   // 集成测试
+  't-auto-',               // 集成测试 · 钉钉自动入库整条链（channels-api.test.ts，D143）
   'e2e-',                  // scripts/e2e-agent.mjs
   'm2-', 'v-', 'v2-', 'v3-', 'v4-', 'v5-', // 一次性验证脚本
   'ui-check', 'smoke-',
