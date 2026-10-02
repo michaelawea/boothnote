@@ -1,6 +1,6 @@
 import { Type } from '@earendil-works/pi-ai';
 
-import { sql } from '../host.ts';
+import { sql, companySuggestion } from '../host.ts';
 import { findSimilar } from '../host.ts';
 import {
   chainRank,
@@ -191,7 +191,7 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
         Type.String({
           description:
             '客户链原文，从终端客户到我们，用 → 连起来。**照原文抄** —— 这是溯源，不做规范化。' +
-            '例：KESSEL GmbH（终端）→ KWR Reisemobile（经销商）→ Rovena（整车厂）→ Voltline。',
+            '例：KESSEL GmbH（终端）→ KWR Reisemobile（dealer）→ Rovena（整车厂）→ Voltline。',
         }),
       ),
       /**
@@ -213,7 +213,7 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
           }),
           {
             description:
-              '渠道链，**从上游到下游**（分销商在前，终端客户在最后）。中间层可以缺。' +
+              '渠道链，**从上游到下游**（distributor 在前，终端客户在最后）。中间层可以缺。' +
               '例：[{name:"KWR Reisemobile",role:"DEALER"},{name:"KESSEL GmbH",role:"END_USER"}]。' +
               '⚠️ 整车厂（OEM）不放进这个数组 —— 它走 companyCode。原话里没提到链就别编。',
           },
@@ -366,15 +366,20 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
     name: 'flag_new_company',
     label: '提议新客户',
     description:
-      '遇到一个明显是房车厂商、但名单里查不到的名字时，提议新建。' +
+      '遇到原文明确提到的客户（OEM、distributor、dealer 或终端客户），但名单里查不到时，提议新建。' +
+      '原文明说的国家和客户类型一起带入建议；没有提到就留空，不凭名字、语言或地址猜国家和类型。' +
       '🔴 **只提议，绝不建。** 建客户是人在界面上点的 —— 关系字段只能是已存在的 UUID（§4.2 第3条），' +
       '销售那份 Excel 就是因为用名字做关联键而散架的。',
     parameters: Type.Object({
       name: Type.String({ description: '照原文写，不要改写、不要补全法律后缀' }),
       country_hint: Type.Optional(Type.String({ description: '如果话里提到了国家' })),
-      evidence: Type.Optional(Type.String({ description: '凭哪句话判断它是房车厂商' })),
+      account_type_hint: Type.Optional(Type.String({ description: '仅原文明说的客户类型，取自 list_enums 的 accountType；未说明就留空' })),
+      evidence: Type.Optional(Type.String({ description: '凭哪句话判断它是客户' })),
     }),
-    execute: async ({ name, country_hint, evidence }: Record<string, any>) => {
+    execute: async ({ name, country_hint, account_type_hint, evidence }: Record<string, any>) => {
+      const suggestion = companySuggestion(name, { name: typeof name === 'string' ? name.trim() : '', country: country_hint, accountType: account_type_hint });
+      if (!suggestion) return { text: '客户名称为空，未提议新建。', details: { rejected: true } };
+      name = suggestion.name;
       // 提议之前自己再查一遍 —— 免得它把 "Brückner" 当新客户提上来
       const hits = findSimilar(name, ctx.companies, { limit: 3 });
       if (hits.length) {
@@ -386,7 +391,10 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
         };
       }
       ctx.suggestedCompany = name;
-      await sql`update staging set suggested_company = ${name} where id = ${ctx.stagingId}`;
+      // Persist the hints in the existing JSON proposal; no CRM write or schema migration.
+      await sql`update staging set suggested_company = ${name},
+        extracted = coalesce(extracted, '{}'::jsonb) || ${sql.json({ companySuggestion: suggestion } as never)}
+        where id = ${ctx.stagingId}`;
       return {
         text: `已提议新客户「${name}」${country_hint ? `（${country_hint}）` : ''}，等人在界面上确认。`,
         details: { name, country_hint, evidence },

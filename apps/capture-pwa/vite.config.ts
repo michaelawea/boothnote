@@ -144,7 +144,7 @@ export default defineConfig({
   },
   // 纯逻辑单元测试（不碰 DOM / 网络）。集成测试在 services/gateway 那边。
   test: {
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}'],
     environment: 'node',
   },
 });

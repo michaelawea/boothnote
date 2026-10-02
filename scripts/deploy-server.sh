@@ -136,11 +136,6 @@ echo "  ── 数据库迁移（幂等）──"
 docker compose --profile prod run --rm --no-deps gateway node src/migrate.ts
 
 echo
-echo "  ── 换上新网关 + 入口（迁移已经跑完，现在起它是安全的）──"
-# caddy 和 gateway 一起起：它 depends_on gateway，早起没意义，晚起没坏处。
-docker compose --profile prod up -d gateway caddy
-
-echo
 echo "  ── Twenty 对象与字段（幂等）──"
 nrun scripts/provision-twenty.mjs || {
   echo "  ⚠️  schema 同步失败。单独重试：./scripts/deploy-server.sh --provision-only"; exit 1; }
@@ -159,6 +154,19 @@ echo "  ── 🛡  数据守卫（第一道：**紧跟 provision，早于任�
 #
 # 判据：**对账要卡在「可能弄坏它的那一步」和「可能掩盖它的那一步」之间。**
 guard "Twenty 对象与字段"
+
+echo
+echo "  ── 暂停旧网关，避免回填期间继续写旧国家列 ──"
+docker compose --profile prod stop gateway
+
+echo
+echo "  ── 客户国家受控化（保留旧字段，回填后停用旧输入）──"
+nrun scripts/migrate-company-countries.mjs --apply || {
+  echo "  🔴 国家迁移失败，网关保持停止。修正后重跑完整部署；不要启动只写旧国家列的版本。"; exit 1; }
+
+echo
+echo "  ── 换上新网关 + 入口（数据库与 CRM 字段已就绪）──"
+docker compose --profile prod up -d gateway caddy
 
 echo
 echo "  ── 清掉 Twenty 自带的示例数据（幂等）──"

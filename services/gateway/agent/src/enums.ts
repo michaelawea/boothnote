@@ -10,6 +10,8 @@
  * 这边是网关侧的副本。两边不一致会被集成测试抓到（枚举对不上 → 白名单全丢弃）。
  */
 
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from './host.ts';
+
 export const CATEGORIES = [
   'BATTERY',
   'INVERTER',
@@ -36,7 +38,7 @@ export const STAGES = [
 /**
  * 新建客户时必填（维护者 2026-07-30）：名字、国家、类型缺一不可。
  *
- * 🔴 **这五个值必须和 `scripts/twenty-schema.mjs` 的 `ACCOUNT_TYPES` 逐字对应。**
+ * 🔴 **这些值必须和 `scripts/twenty-schema.mjs` 的 `ACCOUNT_TYPES` 逐字对应。**
  *
  * 我第一版凭印象编了 `RENTAL` / `CONVERTER` / `OTHER` 三个 Twenty 里根本没有的，
  * 还漏了真实存在的 `OEM_SUB_GROUP`。后果：界面上能选「其他」，
@@ -45,16 +47,7 @@ export const STAGES = [
  * 这正是这个文件开头那句话要防的事，而我自己违反了它：
  * **枚举只能有一个来源。** 现在多了一条集成测试，拿 Twenty 的真实选项对一遍。
  */
-export const ACCOUNT_TYPES = [
-  'OEM_GROUP',
-  'OEM_SUB_GROUP',
-  'OEM_BRAND',
-  'DISTRIBUTOR',
-  'SUB_DISTRIBUTOR',
-  'DEALER',
-  'SUB_DEALER',
-  'END_USER',
-] as const;
+export { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS };
 
 /**
  * 渠道链从上游到下游的顺序（D54）。
@@ -88,18 +81,6 @@ export const isValidChain = (types: string[]): boolean => {
   const ranks = types.map(chainRank);
   if (ranks.some((r) => r < 0)) return false;
   return ranks.every((r, i) => i === 0 || r > ranks[i - 1]!);
-};
-
-/** 给界面用的中文。值不在上面那张表里就不该出现在界面上。 */
-export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
-  OEM_GROUP: 'OEM 集团',
-  OEM_SUB_GROUP: 'OEM 子集团',
-  OEM_BRAND: 'OEM 品牌',
-  DISTRIBUTOR: '分销商',
-  SUB_DISTRIBUTOR: '二级分销商',
-  DEALER: '经销商',
-  SUB_DEALER: '二级经销商',
-  END_USER: '终端客户',
 };
 
 /**
@@ -358,10 +339,10 @@ export const ACCOUNT_TYPE_LABELS_EN: Record<string, string> = {
   OEM_GROUP: 'OEM Group',
   OEM_SUB_GROUP: 'OEM Sub-Group',
   OEM_BRAND: 'OEM Brand',
-  DISTRIBUTOR: 'Distributor',
-  SUB_DISTRIBUTOR: 'Sub-Distributor',
-  DEALER: 'Dealer',
-  SUB_DEALER: 'Sub-Dealer',
+  DISTRIBUTOR: 'distributor',
+  SUB_DISTRIBUTOR: 'sub-distributor',
+  DEALER: 'dealer',
+  SUB_DEALER: 'sub-dealer',
   END_USER: 'End User',
 };
 

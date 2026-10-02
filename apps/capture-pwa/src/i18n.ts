@@ -29,6 +29,7 @@ export type Locale = 'zh' | 'en';
  * 而且不会报错，只会悄悄显示中文。
  */
 const EN: Record<string, string> = {
+  '请选择国家': 'Select a country',
   // ── 外壳 · 导航 ──────────────────────────────────────────────
   速记: 'Capture',
   客户: 'Accounts',
@@ -243,8 +244,6 @@ const EN: Record<string, string> = {
   "不在受控名单里 —— 这一格": "is not on the controlled list — this field",
   "不太确定": "Not sure",
   "中": "Medium",
-  "二级分销商": "Sub-Distributor",
-  "二级经销商": "Sub-Dealer",
   "会接在已有的项目上：": "Will attach to the existing project: ",
   "传闻必须标成传闻。标了它照样有用（提醒你去核实）；被当成事实用下去才是坏账。": "Hearsay has to be marked as hearsay. Marked, it is still useful — it reminds you to verify. Passed on as fact, it becomes bad debt.",
   "低": "Low",
@@ -256,7 +255,6 @@ const EN: Record<string, string> = {
   "其他": "Other",
   "再跑一次": "and run",
   "出错了": "Something went wrong",
-  "分销商": "Distributor",
   "到时间上限": "hit the time limit",
   "到步数上限": "hit the step limit",
   "历史": "History",
@@ -362,7 +360,6 @@ const EN: Record<string, string> = {
   "系统生成": "System generated",
   "紧急": "Urgent",
   "终端客户": "End User",
-  "经销商": "Dealer",
   "网络错误": "Network error",
   "翻手册": "check the playbook",
   "而且这一轮读出来的东西会覆盖上一轮。\\n\\n确定要重新整理吗？": "and what it reads this time will overwrite the last round.\\n\\nRe-run it anyway?",

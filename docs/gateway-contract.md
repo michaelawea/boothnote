@@ -305,15 +305,30 @@ AI 那一屏的流程因此变成三步：**转写 → 人改 → 发送**。
 ### `POST /companies` —— 新建客户
 
 ```jsonc
-// →  { "name":"…", "country":"Germany", "accountType":"OEM_BRAND",
+// →  { "name":"…", "country":"DE", "accountType":"OEM_BRAND",
 //      "parentCode":"…"?, "confirmedUnique": false }
 // ← 201 { "id","code","name","country","accountType" }
 // ← 422 { "error":"missing_fields", "missing":["country","accountType"] }
+// ← 422 { "error":"invalid_country", "field":"country" }
 // ← 409 { "error":"possible_duplicate", "candidates":[ {…, "score":0.9} ] }
 ```
 
 三样必填（维护者 2026-07-30）。**查重是强制的，而且在服务端** ——
 命中相似项时回 409 + 候选，客户端必须显式带 `confirmedUnique: true` 才放行，那一下是**人**看过候选之后按的。
+
+**国家必须来自 `shared/countries.mjs` 的 249 个 ISO 3166-1 alpha-2 选项**（#61 / D151）。
+PWA 用必选下拉并发送代码；网关兼容已知国家的完整名称（如 `Germany` / `德国` → `DE`），
+但拒绝未知文本和非字符串，检查发生在任何 CRM 请求之前。CRM 写入 `company.hqCountryCode` SELECT；
+旧 `hqCountry` TEXT 保留历史值并在验证回填后停用，见 [客户字段迁移](company-fields.md)。
+
+**点击 AI 新客户建议只打开预填表单**（#62 / D150）。`suggested_company` 保持原来的名称字符串；
+`staging.extracted.companySuggestion` 新增 `{ name, country: "FR" | null, accountType: "DEALER" | null }`。
+这些提示由 `flag_new_company` 仅从明确的原文保存，通过 `/threads/:id`、`/inbox`、`/records` 原样下发；
+客户端只采纳名称匹配的提示，未知值留空，用户修改不会被后台轮询覆盖。创建成功或选择已有客户后自动选中。
+提示元数据不算正式记录字段，不影响「AI 未交字段时保留原文」的兜底。查重及显式保存仍然必需。
+
+**渠道类型标签统一英文**（#60 / D149）：`distributor` / `sub-distributor` / `dealer` / `sub-dealer`。
+`DISTRIBUTOR` / `SUB_DISTRIBUTOR` / `DEALER` / `SUB_DEALER` 存储值不变，中文界面也使用这些英文标签。
 
 ### `POST /chain/resolve` · `POST /chain/link` —— 渠道链（D54）
 

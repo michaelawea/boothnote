@@ -11,7 +11,7 @@ import {
   type PreparedAttachments,
 } from './attachments.ts';
 import { systemPrompt } from './prompt.ts';
-import { committedBase } from './inherit.ts';
+import { committedBase, hasRecordProposal } from './inherit.ts';
 import { loadPlaybooks } from './skills.ts';
 import {
   keepThinking,
@@ -549,7 +549,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
         and status in ('ready','failed') and superseded_by is null
         ${takeover ? sql`and created_at > ${takeover.owner_at}` : sql``}
       order by created_at desc limit 1`;
-    if (prev && Object.keys(prev.extracted ?? {}).length) {
+    if (prev && hasRecordProposal(prev.extracted)) {
       await sql`update staging set extracted = ${sql.json(prev.extracted as never)} where id = ${st.id}`;
       inheritedFrom = prev.id;
       inheritedRecordType = typeof prev.extracted?.recordType === 'string' ? prev.extracted.recordType : null;
@@ -820,10 +820,11 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
   if (!ctx.proposed && !failed) {
     const [cur] = await sql<Array<{ extracted: any; transcript: string | null }>>`
       select extracted, transcript from staging where id = ${st.id}`;
-    if (!cur?.extracted || !Object.keys(cur.extracted).length) {
+    if (!hasRecordProposal(cur?.extracted)) {
       const original = (row.text ?? cur?.transcript ?? '').trim();
       const attNames = attList.map((a) => a.filename).join(' · ');
       fallback = {
+        ...(cur?.extracted ?? {}),
         agentSkipped: true,
         // 小结优先用模型自己那段话（它通常已经把事情说清楚了，只是没走工具）
         summary: (result.text || original || '（只有附件）').slice(0, 120).replace(/\s+/g, ' '),

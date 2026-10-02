@@ -804,6 +804,7 @@ export const ReviewCard = ({
             setPickedByHand(true);
           }}
           suggested={suggestedCompany}
+          suggestedFields={extracted.companySuggestion}
         />
       </div>
       )}

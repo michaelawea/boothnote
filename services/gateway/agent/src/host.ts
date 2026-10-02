@@ -21,6 +21,8 @@
 
 // ── 数据库。agent 只写 `staging`，`inbox` 由触发器挡住（§4.2 第 2 条）──────
 export { sql } from '../../src/db.ts';
+export { companySuggestion } from '../../../../shared/company-suggestion.mjs';
+export { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from '../../../../shared/company-types.mjs';
 
 // ── 配置。模型名、上限、开关都在这里 ─────────────────────────────────
 export { env } from '../../src/env.ts';

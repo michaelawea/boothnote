@@ -6,6 +6,7 @@ WORKDIR /src
 COPY apps/capture-pwa/package.json apps/capture-pwa/package-lock.json ./
 RUN npm ci
 COPY apps/capture-pwa/ ./
+COPY shared /shared
 # 前端与网关同源（/api），所以这里不需要注入绝对地址
 ENV VITE_GATEWAY_URL=/api
 RUN npm run build

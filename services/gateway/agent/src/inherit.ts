@@ -7,11 +7,15 @@
  *
  * 返回 null = 没东西可继承（那一版不存在 / 是空的）。
  */
+/** Creation hints are metadata, not a usable record: retain the raw-text fallback. */
+export const hasRecordProposal = (fields: Record<string, unknown> | null | undefined): boolean =>
+  Object.keys(fields ?? {}).some((key) => key !== 'companySuggestion');
+
 export const committedBase = (
   owner: { extracted?: Record<string, unknown> | null; confirm_payload?: { fields?: Record<string, unknown> } | null } | null,
 ): Record<string, unknown> | null => {
   if (!owner) return null;
   const base = { ...(owner.extracted ?? {}), ...(owner.confirm_payload?.fields ?? {}) };
   delete base['agentSkipped']; // 兜底标记不随继承传下去（loop.ts 收尾那段同一条理由）
-  return Object.keys(base).length ? base : null;
+  return hasRecordProposal(base) ? base : null;
 };

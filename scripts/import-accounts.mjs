@@ -14,6 +14,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { normalizeCountry } from '../shared/countries.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DRY = process.argv.includes('--dry');
@@ -31,12 +32,12 @@ const DRY = process.argv.includes('--dry');
 const BACKFILL = process.argv.includes('--backfill');
 
 const env = {};
-for (const line of readFileSync(join(ROOT, '.env'), 'utf8').split('\n')) {
+for (const line of (process.env.SERVER_URL && process.env.TWENTY_API_KEY ? '' : readFileSync(join(ROOT, '.env'), 'utf8')).split('\n')) {
   const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
   if (m) env[m[1]] = m[2].trim().replace(/^["']|["']$/g, '');
 }
-const BASE = (env.SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
-const KEY = env.TWENTY_API_KEY;
+const BASE = (process.env.SERVER_URL || env.SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
+const KEY = process.env.TWENTY_API_KEY || env.TWENTY_API_KEY;
 if (!KEY) { console.error('❌ .env 里缺 TWENTY_API_KEY'); process.exit(1); }
 
 const api = async (method, path, body) => {
@@ -106,8 +107,10 @@ for (const pass of ['OEM_GROUP', 'OEM_BRAND']) {
   console.log(`━━ ${pass === 'OEM_GROUP' ? '第 1 趟 · 集团' : '第 2 趟 · 品牌'}（${batch.length} 条）━━`);
 
   for (const a of batch) {
-    const { parentCode, ...rest } = a;
-    const payload = strip(rest);
+    const { parentCode, hqCountry, ...rest } = a;
+    const country = normalizeCountry(hqCountry);
+    if (hqCountry && !country) { console.error(`❌ ${a.accountCode}：invalid_country`); failed.push(a.accountCode); continue; }
+    const payload = strip({ ...rest, hqCountryCode: country });
 
     if (parentCode) {
       const parent = existing.get(parentCode);

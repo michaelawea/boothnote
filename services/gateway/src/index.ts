@@ -8,6 +8,7 @@ import { env, assertEnv } from './env.ts';
 import { sql, publicUser, canSeeBoard, type AppUser } from './db.ts';
 import { verifyPassword, signToken, userFromToken } from './auth.ts';
 import { findSimilar } from './match.ts';
+import { normalizeCountry } from '../../../shared/countries.mjs';
 import {
   enqueue,
   enqueueTranscribe,
@@ -247,19 +248,21 @@ app.get('/companies/search', { preHandler: requireAuth }, async (req) => {
 app.post('/companies', { preHandler: requireAuth }, async (req, reply) => {
   const b = (req.body ?? {}) as {
     name?: string;
-    country?: string;
+    country?: unknown;
     accountType?: string;
     parentCode?: string;
     confirmedUnique?: boolean;
   };
   const name = (b.name ?? '').trim();
-  const country = (b.country ?? '').trim();
+  const country = normalizeCountry(b.country);
   const accountType = keepAccountType(b.accountType);
+  const countryMissing = b.country == null || (typeof b.country === 'string' && !b.country.trim());
 
-  const missing = [!name && 'name', !country && 'country', !accountType && 'accountType'].filter(
+  const missing = [!name && 'name', countryMissing && 'country', !accountType && 'accountType'].filter(
     Boolean,
   );
   if (missing.length) return reply.code(422).send({ error: 'missing_fields', missing });
+  if (!country) return reply.code(422).send({ error: 'invalid_country', field: 'country' });
 
   const items = await listCompanies();
   const dupes = findSimilar(name, items, { limit: 5 });
@@ -349,7 +352,7 @@ app.post('/chain/link', { preHandler: requireAuth }, async (req, reply) => {
   if (!isValidChain(types)) {
     return reply.code(422).send({
       error: 'bad_order',
-      hint: '渠道链必须从上游到下游：分销商 → 二级分销商 → 经销商 → 二级经销商 → 终端客户',
+      hint: '渠道链必须从上游到下游：distributor → sub-distributor → dealer → sub-dealer → 终端客户',
       got: types,
     });
   }

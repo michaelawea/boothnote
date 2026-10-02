@@ -83,6 +83,7 @@ units() {
   into services/gateway node --test \
       src/__tests__/auth.test.ts \
       src/__tests__/match.test.ts \
+      src/__tests__/company-fields.test.ts \
       src/__tests__/window.test.ts \
       src/__tests__/timeline.test.ts \
       src/__tests__/env.test.ts \

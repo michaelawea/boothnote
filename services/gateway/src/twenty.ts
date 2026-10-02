@@ -1,4 +1,5 @@
 import { env } from './env.ts';
+import { companyCountry, normalizeCountry } from '../../../shared/countries.mjs';
 import {
   portalProjectBody,
   projectTypeBody,
@@ -821,11 +822,13 @@ export const createCompany = async (input: {
   hqCountry: string;
   parentCompanyId?: string | null;
 }) => {
+  const country = normalizeCountry(input.hqCountry);
+  if (!country) throw new Error('invalid_country');
   const r = await call('POST', '/rest/companies', {
     name: input.name,
     accountCode: input.accountCode,
     accountType: input.accountType,
-    hqCountry: input.hqCountry,
+    hqCountryCode: country,
     ...(input.parentCompanyId ? { parentCompanyId: input.parentCompanyId } : {}),
   });
   const id = (r?.data?.createCompany ?? r?.data)?.id as string;
@@ -882,13 +885,15 @@ export const getCompanyByCode = async (code: string): Promise<Record<string, any
     'GET',
     `/rest/companies?filter=${encodeURIComponent(`accountCode[eq]:${code}`)}&depth=1`,
   );
-  return r?.data?.companies?.[0] ?? null;
+  const company = r?.data?.companies?.[0];
+  return company ? { ...company, hqCountry: companyCountry(company) } : null;
 };
 
 /** 整条客户档案（含全部自定义列）—— 算情报完整度要按 `itemKey` 逐列看有没有值。 */
 export const getCompanyById = async (id: string): Promise<Record<string, any> | null> => {
   const r = await call('GET', `/rest/companies/${id}?depth=1`);
-  return r?.data?.company ?? r?.data ?? null;
+  const company = r?.data?.company ?? r?.data;
+  return company ? { ...company, hqCountry: companyCountry(company) } : null;
 };
 
 // ── 情报清单与取值（D17 / D47）──────────────────────────────────────

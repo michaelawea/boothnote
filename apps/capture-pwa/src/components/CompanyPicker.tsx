@@ -1,11 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useState } from 'react';
+import { COUNTRY_CODES, countryName, normalizeCountry } from '../../../../shared/countries.mjs';
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from '../../../../shared/company-types.mjs';
+import { companySuggestion, type CompanySuggestion } from '../../../../shared/company-suggestion.mjs';
 
 import { T } from '../theme';
 import { DuplicateError, createCompany, searchCompanies } from '../api';
 import { useCompanies } from '../companies';
 import type { Company } from '../db';
 import { IconPlus, IconSearch } from '../icons';
-import { t } from '../i18n';
+import { locale, t } from '../i18n';
 
 /**
  * 🔴 **必须和 Twenty 里 `company.accountType` 的选项逐字一致。**
@@ -15,13 +18,7 @@ import { t } from '../i18n';
  * **界面上能选到一个后端会拒绝的值，是最糟的一类 bug**：
  * 人以为是自己填错了，其实是我们给了一个不存在的选项。
  */
-const TYPES: Array<[string, string]> = [
-  ['OEM_GROUP', 'OEM 集团'],
-  ['OEM_SUB_GROUP', 'OEM 子集团'],
-  ['OEM_BRAND', 'OEM 品牌'],
-  ['DISTRIBUTOR', '分销商'],
-  ['DEALER', '经销商'],
-];
+const TYPES = ACCOUNT_TYPES.map((value) => [value, ACCOUNT_TYPE_LABELS[value]] as const);
 
 /**
  * 选客户。
@@ -34,31 +31,35 @@ export const CompanyPicker = ({
   value,
   onPick,
   suggested,
+  suggestedFields,
 }: {
   value?: Company | null;
   onPick: (c: Company) => void;
   /** agent 提议的新客户名（它只提议，绝不建 —— §4.2 第3条）。 */
   suggested?: string | null;
+  suggestedFields?: unknown;
 }) => {
   const all = useCompanies();
   const [q, setQ] = useState('');
-  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState<CompanySuggestion | null>(null);
+  const suggestion = companySuggestion(suggested, suggestedFields);
 
   const hits = useMemo(() => {
     const s = q.trim().toLowerCase();
-    if (!s) return all.slice(0, 8);
-    return all
-      .filter((c) => c.name.toLowerCase().includes(s) || c.code.toLowerCase().includes(s))
+    const matches = all
+      .filter((c) => !s || c.name.toLowerCase().includes(s) || c.code.toLowerCase().includes(s))
       .slice(0, 8);
-  }, [q, all]);
+    // A new selection may not be in the cached list yet; keep it visible.
+    return value && !matches.some((c) => c.id === value.id) ? [value, ...matches].slice(0, 8) : matches;
+  }, [q, all, value]);
 
-  if (creating) {
+  if (draft) {
     return (
       <NewCompany
-        initialName={q || suggested || ''}
-        onCancel={() => setCreating(false)}
+        initial={draft}
+        onCancel={() => setDraft(null)}
         onCreated={(c) => {
-          setCreating(false);
+          setDraft(null);
           onPick(c);
         }}
       />
@@ -102,12 +103,12 @@ export const CompanyPicker = ({
             {c.name}
           </button>
         ))}
-        {suggested && !hits.some((h) => h.name === suggested) && (
-          <span className="chip" data-suggest="true">
-            {t('AI 提议：{a}', { a: suggested })}
-          </span>
+        {suggestion && !hits.some((h) => h.name === suggestion.name) && (
+          <button type="button" className="chip" data-suggest="true" onClick={() => setDraft(suggestion)}>
+            {t('AI 提议：{a}', { a: suggestion.name })}
+          </button>
         )}
-        <button className="chip" onClick={() => setCreating(true)}>
+        <button type="button" className="chip" onClick={() => setDraft(companySuggestion(q || suggested || '') ?? { name: '', country: null, accountType: null })}>
           <IconPlus size={14} /> {t('新建')}
         </button>
       </div>
@@ -129,22 +130,23 @@ export const CompanyPicker = ({
  * 这一步慢半秒，换的是不再出现第二个 Brückner。
  */
 const NewCompany = ({
-  initialName,
+  initial,
   onCreated,
   onCancel,
 }: {
-  initialName: string;
+  initial: CompanySuggestion;
   onCreated: (c: Company) => void;
   onCancel: () => void;
 }) => {
-  const [name, setName] = useState(initialName);
-  const [country, setCountry] = useState('');
-  const [type, setType] = useState('DEALER');
+  const [name, setName] = useState(initial.name);
+  const [country, setCountry] = useState(initial.country ?? '');
+  const [type, setType] = useState<string>(initial.accountType ?? '');
+  const countryId = useId();
   const [dupes, setDupes] = useState<Array<Company & { score: number }> | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
-  const ready = name.trim() && country.trim() && type;
+  const ready = name.trim() && normalizeCountry(country) && ACCOUNT_TYPES.some((value) => value === type);
 
   const submit = async (confirmedUnique: boolean) => {
     setBusy(true);
@@ -162,10 +164,16 @@ const NewCompany = ({
 
   const check = async () => {
     setBusy(true);
-    const hits = await searchCompanies(name.trim());
-    setBusy(false);
-    if (hits.length) setDupes(hits);
-    else void submit(false);
+    setErr('');
+    try {
+      const hits = await searchCompanies(name.trim());
+      if (hits.length) setDupes(hits);
+      else await submit(false);
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   };
 
   if (dupes) {
@@ -207,7 +215,14 @@ const NewCompany = ({
     <div>
       <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 10 }}>{t('新建客户')}</div>
       <Field label={t('名字')} value={name} onChange={setName} placeholder={t('照他们自己的写法')} />
-      <Field label={t('国家')} value={country} onChange={setCountry} placeholder="Germany / Italy…" />
+      <div style={{ marginTop: 10 }}>
+        <label htmlFor={countryId} style={{ display: 'block', fontSize: 12, color: T.textSoft, marginBottom: 5 }}>{t('国家')}</label>
+        <select id={countryId} value={country} required onChange={(e) => setCountry(e.target.value)}
+          style={{ width: '100%', height: 44, padding: '0 14px', borderRadius: 12, background: T.s3, fontSize: 15 }}>
+          <option value="" disabled>{t('请选择国家')}</option>
+          {COUNTRY_CODES.map((code) => <option key={code} value={code}>{countryName(code, locale())}</option>)}
+        </select>
+      </div>
       <div style={{ fontSize: 12, color: T.textSoft, margin: '10px 0 6px' }}>{t('类型')}</div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7 }}>
         {TYPES.map(([v, label]) => (
@@ -222,7 +237,7 @@ const NewCompany = ({
           {t('取消')}
         </button>
         <button className="btn sm" style={{ flex: 2 }} disabled={!ready || busy} onClick={() => void check()}>
-          {busy ? '查重中…' : t('查重并新建')}
+          {busy ? t('查重中…') : t('查重并新建')}
         </button>
       </div>
       <div style={{ fontSize: 11.5, color: T.textLight, marginTop: 8, lineHeight: 1.7 }}>
@@ -242,21 +257,25 @@ const Field = ({
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
-}) => (
-  <div style={{ marginTop: 10 }}>
-    <div style={{ fontSize: 12, color: T.textSoft, marginBottom: 5 }}>{label}</div>
-    <input
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      style={{
-        width: '100%',
-        height: 44,
-        padding: '0 14px',
-        borderRadius: 12,
-        background: T.s3,
-        fontSize: 15,
-      }}
-    />
-  </div>
-);
+}) => {
+  const id = useId();
+  return (
+    <div style={{ marginTop: 10 }}>
+      <label htmlFor={id} style={{ display: 'block', fontSize: 12, color: T.textSoft, marginBottom: 5 }}>{label}</label>
+      <input
+        id={id}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        style={{
+          width: '100%',
+          height: 44,
+          padding: '0 14px',
+          borderRadius: 12,
+          background: T.s3,
+          fontSize: 15,
+        }}
+      />
+    </div>
+  );
+};

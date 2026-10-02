@@ -22,7 +22,7 @@ import {
 import { sanitizeFieldEdits } from '../../../src/confirm.ts';
 import { runAgent, type ModelBinding, type Skill } from '../runtime.ts';
 import { FORBIDDEN_TOOL_NAMES, TOOL_NAMES, buildSkills, newContext } from '../tools/index.ts';
-import { committedBase } from '../inherit.ts';
+import { committedBase, hasRecordProposal } from '../inherit.ts';
 
 /**
  * agent 的单元测试。**一行网络请求都不发** —— 模型换成 pi-ai 自带的 fauxProvider。
@@ -48,6 +48,13 @@ const ctx = () =>
     resumed: false,
     source: null,
   });
+
+it('新客户建议本身不能充当业务记录，原文兜底仍须生效', () => {
+  const hints = { companySuggestion: { name: 'Example Caravan', country: 'FR', accountType: 'DEALER' } };
+  assert.equal(hasRecordProposal(hints), false);
+  assert.equal(committedBase({ extracted: hints }), null);
+  assert.equal(hasRecordProposal({ ...hints, summary: '原文内容' }), true);
+});
 
 // ── ② 工具清单快照 ─────────────────────────────────────────────────
 describe('工具清单 —— 能力边界的唯一执行机制', () => {

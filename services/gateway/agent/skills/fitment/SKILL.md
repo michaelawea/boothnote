@@ -29,7 +29,7 @@ description: 记录类型是 fitment（产品选型情报，成交前）时读�
 ## 渠道链（chain，D54）
 
 话里或附件里提到「谁卖给谁」时，除了写进 customerChain 文本，
-还要填结构化的 `chain`，**从上游到下游排**（分销商在前，终端客户最后）：
+还要填结构化的 `chain`，**从上游到下游排**（distributor 在前，终端客户最后）：
 `[{name:"KWR Reisemobile",role:"DEALER"},{name:"KESSEL GmbH",role:"END_USER"}]`
 整车厂不放进这个数组 —— 它走 companyCode。**原话没提到就别编一条链出来。**
 

@@ -14,6 +14,8 @@ import { env } from '../env.ts';
 import { createProject } from '../twenty.ts';
 // D138：2C 问卷的写入心跳 / 启动恢复 —— 和 claimDue 一样直接调模块
 import { drainSurveys, resumeSurveys } from '../surveys.ts';
+import { newContext } from '../../agent/src/tools/context.ts';
+import { writeSkills } from '../../agent/src/tools/write.ts';
 
 /**
  * 网关集成测试 —— 打真实的 HTTP + 真实的库。
@@ -902,6 +904,48 @@ describe('④ 旧形状仍然可用（六必之四）', () => {
 });
 
 describe('⑤ 新建客户的强制查重（六必之五）', () => {
+  it('AI 提议的国家/类型真正落住，并由对话、速记、看板回给表单（只提议不建）', async () => {
+    const { token } = await loginAs(ADMIN);
+    const r = await post(token, { clientId: randomUUID(), text: 'Example Caravan 是法国的一家 dealer', createdAt: Date.now(), toAgent: true });
+    assert.equal(r.status, 201);
+    const [user] = await sql`select id from app_user where user_code = ${ADMIN.code}`;
+    await sql`update staging set extracted = ${sql.json({ summary: '已有的记录内容' })} where id = ${r.json.stagingId}`;
+    const context = newContext({
+      inboxId: r.json.inboxId, stagingId: r.json.stagingId, threadId: r.json.threadId,
+      userId: user!.id, userCode: ADMIN.code, displayName: 'Test',
+      companies: [], suppliers: [], attachments: [], maxSteps: 8, pushPlaybooks: [], resumed: false, source: 'pwa',
+    });
+    const name = `Example Caravan ${SUFFIX}`;
+    await writeSkills(context).find((tool) => tool.name === 'flag_new_company')!.execute({
+      name, country_hint: 'France', account_type_hint: 'DEALER', evidence: '法国的一家 dealer',
+    });
+    const expected = { name, country: 'FR', accountType: 'DEALER' };
+    const [stored] = await sql`select suggested_company, extracted from staging where id = ${r.json.stagingId}`;
+    assert.equal(stored!.suggested_company, name);
+    assert.deepEqual(stored!.extracted.companySuggestion, expected);
+    assert.equal(stored!.extracted.summary, '已有的记录内容');
+
+    await sql`update staging set status = 'ready' where id = ${r.json.stagingId}`;
+    await sql`insert into thread_message (thread_id, role, text, inbox_id, meta)
+      values (${r.json.threadId}, 'agent', '已有提议', ${r.json.inboxId}, ${sql.json({ stagingId: r.json.stagingId })})`;
+    const inbox = await req('/inbox?limit=100', { headers: auth(token) });
+    assert.deepEqual(inbox.json.items.find((item: any) => item.id === r.json.inboxId).extracted.companySuggestion, expected);
+    const thread = await req(`/threads/${r.json.threadId}`, { headers: auth(token) });
+    assert.deepEqual(thread.json.messages.find((message: any) => message.role === 'agent').extracted.companySuggestion, expected);
+    const records = await req('/records', { headers: auth(token) });
+    assert.deepEqual(records.json.items.find((item: any) => item.id === r.json.stagingId).extracted.companySuggestion, expected);
+  });
+  it('不存在的国家和非字符串国家都在任何 CRM 写入之前返回 422', async () => {
+    const { token } = await loginAs(ADMIN);
+    for (const country of ['NotARealCountry', 'ZZ', { name: 'Germany' }, ['DE'], 123]) {
+      const r = await req('/companies', {
+        method: 'POST', headers: { ...auth(token), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Example Country Guard', country, accountType: 'DEALER', confirmedUnique: true }),
+      });
+      assert.equal(r.status, 422);
+      assert.equal(r.json.error, 'invalid_country');
+    }
+  });
   it('三样必填，缺一个 422（名字 / 国家 / 类型）', async () => {
     const { token } = await loginAs(ADMIN);
     const r = await req('/companies', {

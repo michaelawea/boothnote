@@ -1,3 +1,5 @@
+import { COUNTRY_CODES, countryName } from '../shared/countries.mjs';
+
 /**
  * EU Boothnote —— Twenty 数据结构定义（唯一真相源）
  *
@@ -71,10 +73,10 @@ export const ACCOUNT_TYPES = [
   { value: 'oemGroup',       label: 'OEM 集团',   color: 'purple' },
   { value: 'oemSubGroup',    label: 'OEM 子集团', color: 'violet' },
   { value: 'oemBrand',       label: 'OEM 品牌',   color: 'blue'   },
-  { value: 'distributor',    label: 'Distributor 分销商',     color: 'amber'  },
-  { value: 'subDistributor', label: 'Sub-Distributor 二级分销商', color: 'yellow' },
-  { value: 'dealer',         label: 'Dealer 经销商',     color: 'orange' },
-  { value: 'subDealer',      label: 'Sub-Dealer 二级经销商', color: 'red'    },
+  { value: 'distributor',    label: 'distributor',     color: 'amber'  },
+  { value: 'subDistributor', label: 'sub-distributor', color: 'yellow' },
+  { value: 'dealer',         label: 'dealer',     color: 'orange' },
+  { value: 'subDealer',      label: 'sub-dealer', color: 'red'    },
   { value: 'endUser',        label: 'End User 终端客户',   color: 'gray'   },
 ];
 
@@ -311,11 +313,14 @@ export const FIELDS = {
     { ...rel('company', '下游客户', 'IconTruckDelivery'), name: 'soldVia', label: 'Sold Via (upstream) 上游（从谁买的）', icon: 'IconTruckDelivery',
       description: 'D54：渠道链。distributor → subDistributor → dealer → subDealer → endUser，中间层可以缺。\n' +
         '🔴 **和 parentCompany 是两根不同的轴。** 那份远程支持报告里的\n' +
-        '`KESSEL GmbH（终端）→ KWR Reisemobile（经销商）→ Rovena（整车厂）→ Voltline`\n' +
+        '`KESSEL GmbH（终端）→ KWR Reisemobile（dealer）→ Rovena（整车厂）→ Voltline`\n' +
         '是渠道链，不是集团树 —— KWR 并不拥有 Rovena。混在一起之后，\n' +
-        '「这个集团下面有几个品牌」和「这家经销商下面有几个终端客户」会同时算错。\n' +
-        '⚠️ 已知取舍：一家经销商可能同时从两家分销商进货，这里只记**主要**那一条。' },
-    { name: 'hqCountry',        label: 'HQ Country 总部国家',   type: 'TEXT',   icon: 'IconFlag' },
+        '「这个集团下面有几个品牌」和「这家 dealer 下面有几个终端客户」会同时算错。\n' +
+        '⚠️ 已知取舍：一家 dealer 可能同时从两家 distributor 进货，这里只记**主要**那一条。' },
+    // Keep the original column and its data. Migration deactivates it only after verified backfill.
+    { name: 'hqCountry', label: 'Legacy HQ Country 原国家（历史）', type: 'TEXT', icon: 'IconFlag', isActive: false },
+    { name: 'hqCountryCode', label: 'HQ Country 总部国家', type: 'SELECT', icon: 'IconFlag',
+      options: COUNTRY_CODES.map((value) => ({ value, label: countryName(value, 'en'), color: 'blue' })) },
     { name: 'productionSite',   label: 'Production Site 生产地',     type: 'TEXT',   icon: 'IconBuildingWarehouse' },
     { name: 'annualProduction', label: 'Annual Output 年产量(约)', type: 'TEXT',   icon: 'IconChartBar',
       description: '销售表里是区间字符串（如 "8,000-10,000"），故用 TEXT 而非 NUMBER，不做有损转换。' },
@@ -353,7 +358,7 @@ export const FIELDS = {
     { name: 'userCode', label: 'User Code 用户代号', type: 'TEXT', icon: 'IconId', isUnique: true,
       description: '网关用它把「我们自己的登录态」映射到这条记录。与 Twenty 的账号体系无关 —— 外部录入者在这里是一条数据，不是一个账号（D18）。' },
     { name: 'contributorType', label: 'Type 类型', type: 'SELECT', icon: 'IconUsersGroup',
-      options: [ yn('internal', 'Internal 公司内部','blue'), yn('distributor', 'Distributor 分销商','amber'), yn('dealer', 'Dealer 经销商','orange') ] },
+      options: [ yn('internal', 'Internal 公司内部','blue'), yn('distributor', 'distributor','amber'), yn('dealer', 'dealer','orange') ] },
     { name: 'isActive', label: 'Is Active 在用', type: 'BOOLEAN', icon: 'IconToggleLeft' },
   ],
 

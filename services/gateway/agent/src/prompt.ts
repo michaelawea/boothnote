@@ -71,6 +71,8 @@ export const systemPrompt = (ctx: SkillContext): string =>
     '# 硬要求',
     '· **绝对不要输出任何自然人姓名。** 只写职位（如「采购负责人」）。这是合规要求，不是风格偏好。',
     '· companyCode 只能来自 search_companies 的返回值。名单里没有的名字用 flag_new_company 提议，**不要自己编 code**。',
+    '· flag_new_company：原文明说的国家、类型分别填 country_hint / account_type_hint，供人点建议时预填；没说就留空。',
+    '· 对客户身份的展示始终写 distributor / dealer（含 sub-distributor / sub-dealer），中文回复也不用中文译名。',
     '· 数量一律照原文写，不要换算单位、不要补零。',
     '· 🔴 **`annualVehicles`（客户一年造多少辆车）和 `demandQuantity`（他要多少件我们的货）**',
     '  是两个不同的数，别混 —— 把「要 20,000 块电池」写进前者，等于说这家一年造 20,000 辆车。原话没说就留空。',

@@ -15,6 +15,7 @@ COPY services/gateway/migrations ./migrations
 #    不是静默失败 —— 这一点是刻意的）。
 #    它必须留在 /app 之下：node 只往祖先目录找 node_modules，而依赖装在 /app。
 COPY services/gateway/agent ./agent
+COPY shared /shared
 
 # 音频落这里，由 named volume 挂载。
 # ⚠️ pg_dump 不含这些文件，备份脚本要单独同步（infra/backup.sh）

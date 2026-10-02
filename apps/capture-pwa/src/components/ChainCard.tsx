@@ -6,6 +6,7 @@ import type { Company } from '../db';
 import { IconCheck, IconPlus } from '../icons';
 import { CompanyPicker } from './CompanyPicker';
 import { t } from '../i18n';
+import { ACCOUNT_TYPE_LABELS } from '../../../../shared/company-types.mjs';
 
 /**
  * 渠道链（D54）—— `distributor → subDistributor → dealer → subDealer → endUser`。
@@ -18,14 +19,8 @@ import { t } from '../i18n';
  * ⚠️ **agent 只提议，不建。** 名单里没有的那几层，是人在这里点「新建」才建的
  * —— 而且走的是和别处同一套强制查重（§4.2 第3条）。
  */
-/** 存中文规范形式，渲染时才过 `t()`（D80 判据）—— 模块级 `t()` 在 import 时就定死语言了。 */
-const ROLE_LABEL: Record<string, string> = {
-  DISTRIBUTOR: '分销商',
-  SUB_DISTRIBUTOR: '二级分销商',
-  DEALER: '经销商',
-  SUB_DEALER: '二级经销商',
-  END_USER: '终端客户',
-};
+/** 在渲染时翻译；渠道身份在两种语言下都使用英文（#60）。 */
+const ROLE_LABEL: Readonly<Record<string, string>> = ACCOUNT_TYPE_LABELS;
 
 export const ChainCard = ({ chain }: { chain: Array<{ name: string; role: string }> }) => {
   const [levels, setLevels] = useState<ChainLevel[] | null>(null);
@@ -70,6 +65,7 @@ export const ChainCard = ({ chain }: { chain: Array<{ name: string; role: string
         </div>
         <CompanyPicker
           suggested={levels[creating]!.name}
+          suggestedFields={{ name: levels[creating]!.name, accountType: levels[creating]!.role }}
           onPick={(c) => {
             setPicked((p) => ({ ...p, [creating]: c }));
             setCreating(null);
@@ -93,7 +89,7 @@ export const ChainCard = ({ chain }: { chain: Array<{ name: string; role: string
         const got = picked[i] ?? lv.matched;
         return (
           <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
-            <span style={{ fontSize: 11, color: T.textLight, width: 62, flexShrink: 0 }}>
+            <span style={{ fontSize: 11, color: T.textLight, width: 96, flexShrink: 0 }}>
               {t(ROLE_LABEL[lv.role] ?? lv.role)}
             </span>
             <span style={{ flex: 1, fontSize: 14 }}>{got?.name ?? lv.name}</span>

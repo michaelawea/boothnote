@@ -14,6 +14,7 @@
  * 只能各存一份 —— `portalModel.test.ts` 逐个对账，多一个少一个都红。
  */
 import { toEnum } from './survey.ts';
+import { companyCountry } from '../../../shared/countries.mjs';
 
 // ── 枚举（与 twenty-schema.mjs 的 PROJECT_STATUSES / PROJECT_UPDATE_KINDS / DATE_PRECISIONS 对账）──
 export const PROJECT_STATUSES = ['active', 'onHold', 'done', 'cancelled'] as const;
@@ -804,7 +805,7 @@ export const normCompany = (r: Row): SnapshotCompany => ({
   name: typeof r.name === 'string' ? r.name : '',
   accountCode: str(r.accountCode),
   accountType: looseEnum(r.accountType),
-  hqCountry: str(r.hqCountry),
+  hqCountry: companyCountry(r),
 });
 
 export const normStage = (r: Row): SnapshotStage & { projectTypeId: string | null } => ({
