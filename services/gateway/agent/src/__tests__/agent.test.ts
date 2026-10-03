@@ -64,12 +64,12 @@ describe('工具清单 —— 能力边界的唯一执行机制', () => {
     // 数量写死。加工具本身没问题，但**必须是有意识地加** ——
     // 改这个数字的那一刻，就得回头看一眼 docs/agent.md 里的圈层图还对不对。
     // 2026-08-05：14 → 15，加了 read_skill（D72，Ring 1 只读手册）。docs/agent.md 已同步。
-    assert.equal(names.length, 15, `工具数量变了（${names.length}）—— 顺手更新 docs/agent.md`);
+    assert.equal(names.length, 17, `工具数量变了（${names.length}）—— 顺手更新 docs/agent.md`);
   });
 
   it('🔴 D147：钉钉来源不注册 propose_intel_field —— 它跑的过程中就写 Twenty，60 秒撤回取消不掉', async () => {
     const dd = buildSkills({ ...ctx(), source: 'dingtalk' }).map((s) => s.name).sort();
-    assert.deepEqual(dd, [...TOOL_NAMES].filter((n) => n !== 'propose_intel_field').sort());
+    assert.deepEqual(dd, [...TOOL_NAMES].filter((n) => !['propose_intel_field','propose_records','get_proposal_items'].includes(n)).sort());
     // PWA（和不传来源的老调用方）一个字不变
     assert.ok(buildSkills({ ...ctx(), source: 'pwa' }).some((s) => s.name === 'propose_intel_field'));
     // prompt 也不能再提它 —— 提了模型会去调一个不存在的工具，白烧一步

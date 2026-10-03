@@ -8,10 +8,11 @@ description: 记录类型判成 project 或 followup 时必读——客户已定
 **成交之前的一切是「商机」，定点之后的一切是「项目」。**
 商机回答「这单能不能做成」，项目回答「做成之后怎么交付」。这两个不要混。
 
-## 🔴🔴 铁律：recordType 是 project 或 followup 时，这一轮必须调一次 `propose_project`
+## 项目提案必须包含项目与交付事项
 
-`propose_fields` 记的是「这条讲了什么」，`propose_project` 记的是「CRM 里要长出哪个项目」——
-**两个都要，不是二选一。** 只交前者的话，人在核对卡上看到一堆字段，
+旧单项路径必须调一次 `propose_project`：`propose_fields` 记「这条讲了什么」，项目工具记「CRM要长出哪个项目」，两个都要。
+多事项路径用 `propose_records`，该项的 fields 带完整 project/workItems/docs，不能再压回一个 `propose_fields`。
+只交摘要的话，人在核对卡上看到一堆字段，
 而 CRM 里没有任何项目 —— 那正是这个功能存在的全部意义。
 
 判据（命中任一就是 project）：原话里出现
@@ -20,6 +21,12 @@ description: 记录类型判成 project 或 followup 时必读——客户已定
 ## 新项目还是已有项目？—— 必须查，不能猜
 
 **先 `get_projects` 看编号在不在**：在就是更新（传同一个 projectCode），不在才是新建。
+
+对未明确指定编号的跟进，先查候选差异，再用 `ask_user(targetOptions,recommendedIndex)`
+给推荐项目/任务及 create/clarify 出口，候选句柄来自读工具，不自行编 UUID。
+原话已明确指定经过校验的编号时预填，不要求用户重选。
+API故障/分页未完整读取不能当成「没有项目」；自己的待确认候选与CRM已入库对象明确区别。
+多事项的问题指定 itemId，答案只推进那个事项，不复制或取代同thread其它事项。
 
 🔴 **原话明说「立一个项目 / 新建项目 / 建个项目」= 新项目，编号留空** ——
 哪怕这家名下已经有名字相近的项目也一样。**不要把已有项目的编号拿来复用**：

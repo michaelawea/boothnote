@@ -4,6 +4,34 @@
 > 上位文档：内部设计日志（未公开）（§4.2 写入边界契约 / D33 库隔离 / D35 账号与角色）
 > 最近一次大改：**2026-08-03**（阶段 B + P：对话线程 · 附件 · Pi agent · 5 秒延迟提交）
 
+## 2026-10：并行界面、结构化问题与多事项（#64–#66）
+
+两套界面共用下面的业务契约。开发测试界面只替换显示组件，默认仍为现行界面；
+不会创建测试 CRM。设计及审查记录见 [agent-interaction-redesign.md](agent-interaction-redesign.md)。
+
+| 接口/字段 | 契约 |
+|---|---|
+| `POST /threads`、`POST /inbox` 的 `clientThreadId?` | UUID，按当前用户唯一；离线回放和在线建线程共用，不重复建线程、不恢复已删除线程 |
+| `GET /threads/:id` 的消息 `client_id` | 原始 inbox 客户端 ID，供本地消息与回执合并，消息 ID 仍为服务器 ID |
+| 消息/队列/记录的 `proposal_items`、`item_summary` | 独立事项及修订、逐项状态与业务事项计数；历史修订仍可读 |
+| 问题 `questionId`、`choices`、`expectedRevision`、`status` | 选项具有稳定 ID 和目标绑定；版本是字符串令牌，状态从派生问题表投影 |
+| `POST /threads/:id/questions/:questionId/answers` | `{clientId,expectedRevision,optionId?,text?}`；只允许本人、当前来源版本及问题选项；重复回执幂等，冲突返回 409；答案为新不可变原文 |
+| `GET /staging/:id/items` | 本人事项 `{items,summary}` |
+| `POST /staging/:id/items/confirm` | `{items:[{itemId,revision,companyId?,fields?,supportCaseId?}]}`；仅确认所选事项，受控客户 UUID，提交前复验目标；保留延迟撤销窗 |
+| `DELETE /proposal-items/:id/confirm` | `{revision}`；只撤销本人该版本的延迟确认 |
+| `DELETE /proposal-items/:id` | `{revision}`；只撤回本人当前 ready 版本，原有 CRM 记录保留 |
+| 旧单条确认/重录/批量/整条 CRM 删除接口 | 遇多事项返回 `409 multi_item_endpoint_required`，不默取第一项 |
+
+事项状态独立；部分成功不能显示成整批成功。远端操作回包丢失标为 `unknown`，
+不得盲重试创建；持久执行台账保留已成功步骤。多事项改口需要明确事项和版本，
+旧的整段回退路径不归档这些事项。`AGENT_MULTI_ITEMS=0` 可停用新的提案工具，
+已存在事项的读取及确认保持可用。钉钉暂走既有单项流程。
+
+网关提交 worker 持有专用 Postgres session 排他锁，同库第二实例启动失败；
+连接断开时当前实例停止，避免失锁后继续写入。部署需先停旧网关，再启动替代实例。
+持锁后将上次中断的事项操作及 committing 版本标为 unknown，保留回执，不自动重排。
+旧记录若已被事项引用，整条 CRM 删除或改口换客户的删除分支拒绝误删共享记录。
+
 ## 0. 它在架构里的位置
 
 ```

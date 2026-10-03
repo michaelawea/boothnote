@@ -1,9 +1,11 @@
 import type { Skill } from '../runtime.ts';
 import type { SkillContext } from './context.ts';
+import { env } from '../host.ts';
 import { intelFieldSkill } from './intel-field.ts';
 import { projectSkills } from './project.ts';
 import { readSkills } from './read.ts';
 import { writeSkills } from './write.ts';
+import { recordSkills } from './records.ts';
 
 export { newContext, type SkillContext } from './context.ts';
 export { warnIfColumnSwitchOn } from './intel-field.ts';
@@ -25,6 +27,7 @@ export { warnIfColumnSwitchOn } from './intel-field.ts';
 export const buildSkills = (ctx: SkillContext): Skill[] => [
   ...readSkills(ctx),
   ...writeSkills(ctx),
+  ...(ctx.source === 'dingtalk' || !env.agentMultiItems ? [] : recordSkills(ctx)),
   // D147：钉钉来源不注册 —— 它在跑的过程中就写 Twenty，60 秒撤回取消不掉它。
   // 能力边界靠「清单里有没有」，不靠 prompt 写「请不要」（文件头那条）。
   ...(ctx.source === 'dingtalk' ? [] : [intelFieldSkill(ctx)]),
@@ -45,6 +48,7 @@ export const TOOL_NAMES = [
   'read_skill',
   'search_companies',
   'get_thread',
+  'get_proposal_items',
   'get_company_gaps',
   'get_company_records',
   'get_projects',
@@ -52,6 +56,7 @@ export const TOOL_NAMES = [
   'list_enums',
   // Ring 2 · 写提案 / 造字段
   'propose_fields',
+  'propose_records',
   'ask_user',
   'flag_new_company',
   'propose_intel_field',

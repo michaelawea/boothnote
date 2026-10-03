@@ -55,6 +55,28 @@ const toRemote = (raw: unknown): RemoteAttachment[] | undefined => {
   return list.length ? list : undefined;
 };
 
+export const enqueueQuestionAnswer = async (input: {
+  threadId: string; questionId: string; expectedRevision: string;
+  optionId?: string; text?: string; displayText: string;
+}): Promise<Note> => {
+  const session = getSession();
+  if (!session) throw new AuthError(t('请先登录'));
+  const note: Note = {
+    id: crypto.randomUUID(), text: input.displayText, threadId: input.threadId,
+    createdAt: Date.now(), recordedBy: session.user.userCode, visitLabel: '',
+    sync: 'queued', attempts: 0, toAgent: true,
+    questionAnswer: {
+      questionId: input.questionId, expectedRevision: input.expectedRevision,
+      optionId: input.optionId, text: input.text,
+    },
+  };
+  await db.notes.add(note);
+  emit();
+  return note;
+};
+
+class AnswerRejected extends Error {}
+
 const upload = async (
   note: Note,
 ): Promise<{ inboxId: string; threadId?: string; stagingId?: string; attachments?: RemoteAttachment[] }> => {
@@ -64,6 +86,22 @@ const upload = async (
     await new Promise((r) => setTimeout(r, 600));
     if (!navigator.onLine) throw new Error(t('离线'));
     return { inboxId: `mock-${note.id.slice(0, 8)}` };
+  }
+
+  if (note.questionAnswer) {
+    if (!note.threadId) throw new AnswerRejected('missing_question_thread');
+    const res = await authFetch(`/threads/${note.threadId}/questions/${note.questionAnswer.questionId}/answers`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: note.id, ...note.questionAnswer }),
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const message = String(body.error ?? `HTTP ${res.status}`);
+      if (res.status >= 400 && res.status < 500 && res.status !== 429) throw new AnswerRejected(message);
+      throw new Error(message);
+    }
+    return await res.json();
   }
 
   // 真实路径：multipart，原文与音频一起进 inbox（§4.2 第2条）
@@ -80,6 +118,7 @@ const upload = async (
       audioSeconds: note.audioSeconds ?? null,
       // 有 threadId = 续写。服务端会**新插一行** inbox，不会改老的那行（§4.2 第2条）
       threadId: note.threadId ?? null,
+      clientThreadId: note.clientThreadId,
       // D31：速记不自动跑 agent。只有 AI 那一屏发出来的才带这个。
       toAgent: note.toAgent === true,
       /**
@@ -151,13 +190,21 @@ export const flush = async ({ manual = false } = {}): Promise<void> => {
   try {
     // ⚠️ 也捞 `syncing`：上一轮被中断的会卡在这个状态，而它既不会被重传、
     //    也不会被显示 —— 见 retry.ts 顶部那段。
-    const queued = await db.notes.where('sync').anyOf('queued', 'failed', 'syncing').sortBy('createdAt');
+    const userCode = getSession()!.user.userCode;
+    const queued = await db.notes.where('sync').anyOf('queued', 'failed', 'syncing')
+      .filter((note) => note.recordedBy === userCode).sortBy('createdAt');
     for (const note of queued) {
+      if (note.answerBlocked || getSession()?.user.userCode !== userCode) continue;
       if (!shouldUpload(note, { manual })) continue;
       // 人手动点的话，把次数清零 —— 否则这一次成功了，下一次又从第 8 次开始
       if (manual && note.attempts) await db.notes.update(note.id, { attempts: 0 });
       await db.notes.update(note.id, { sync: 'syncing' });
       emit();
+      // Authentication can change while IndexedDB commits the state transition.
+      if (getSession()?.user.userCode !== userCode) {
+        await db.notes.update(note.id, { sync: 'queued' });
+        break;
+      }
       try {
         const r = await upload(note);
         // 上传成功才丢音频和附件，省手机空间；文本永远留着。
@@ -188,6 +235,7 @@ export const flush = async ({ manual = false } = {}): Promise<void> => {
           sync: 'failed',
           attempts: note.attempts + 1,
           lastError: (e as Error).message,
+          answerBlocked: e instanceof AnswerRejected,
         });
       }
       emit();

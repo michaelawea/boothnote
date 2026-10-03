@@ -1,6 +1,9 @@
-import { applyUser, authFetch, type User } from './auth';
+import { applyUser, authFetch, getSession, type User } from './auth';
 import { db, type Company, type EnumSet, type RecordRow, type Thread } from './db';
 import { t, type Locale } from './i18n';
+import type { QuestionSnapshot } from '../../../shared/agent-questions.mjs';
+import type { ItemSelection, ProposalItemView } from './proposal-items';
+export type { ItemSelection, ProposalItemView } from './proposal-items';
 
 /**
  * 网关的读取侧客户端。
@@ -125,17 +128,21 @@ export const fetchRecords = async (): Promise<RecordRow[]> => {
 
 // ── 对话 ────────────────────────────────────────────────────────
 export const syncThreads = async (): Promise<Thread[]> => {
+  const owner = getSession()?.user.userCode;
+  if (!owner) return [];
   try {
     const res = await authFetch('/threads');
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const { items } = (await res.json()) as { items: Thread[] };
     await db.transaction('rw', db.threads, async () => {
-      await db.threads.clear();
-      await db.threads.bulkAdd(items ?? []);
+      await db.threads.filter((thread) => thread.recordedBy === owner).delete();
+      await db.threads.bulkPut((items ?? []).map((thread) => ({ ...thread, recordedBy: owner })));
     });
-    return items ?? [];
+    return getSession()?.user.userCode === owner ? items ?? [] : [];
   } catch {
-    return db.threads.orderBy('last_message_at').reverse().toArray();
+    if (getSession()?.user.userCode !== owner) return [];
+    const cached = await db.threads.orderBy('last_message_at').reverse().filter((thread) => thread.recordedBy === owner).toArray();
+    return getSession()?.user.userCode === owner ? cached : [];
   }
 };
 
@@ -146,12 +153,12 @@ export const syncThreads = async (): Promise<Thread[]> => {
  * 而人在等不到反应时会连按几下 —— 那几下每一下都带着 `null` 发出去，
  * 服务端就每次新开一条。2026-08-03 实测：一句话开了 5 条对话、跑了 5 轮模型。
  */
-export const createThread = async (title?: string): Promise<string | null> => {
+export const createThread = async (title?: string, clientThreadId?: string): Promise<string | null> => {
   try {
     const res = await authFetch('/threads', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: title?.slice(0, 40) }),
+      body: JSON.stringify({ title: title?.slice(0, 40), clientThreadId }),
     });
     if (!res.ok) return null;
     return ((await res.json()) as { id: string }).id;
@@ -379,10 +386,12 @@ export const transcribeAudio = async (blob: Blob, mime?: string): Promise<string
 
 export type ThreadMessage = {
   id: string;
+  /** Gateway inbox idempotency key; present on user messages for optimistic reconciliation. */
+  client_id?: string | null;
   role: 'user' | 'agent' | 'system';
   text: string;
   inbox_id: string | null;
-  meta: { questions?: Array<{ question: string; options?: string[] }>; partial?: boolean };
+  meta: { questions?: Array<QuestionSnapshot | { question: string; options?: string[] }>; partial?: boolean };
   created_at: string;
   /**
    * D90（issue #23）：这条已经被改口取代了 —— 值是取代它的那条消息 id。
@@ -408,6 +417,8 @@ export type ThreadMessage = {
   run_duration_ms: number | null;
   /** D75：staging 上的错误（重录失败原因等）。null = 没有。 */
   staging_error: string | null;
+  /** Independent business proposals; a legacy card must never flatten these to its first item. */
+  proposal_items?: ProposalItemView[];
   /** D75：人上次确认时改过的那几格 —— 重录界面要显示入库的值，不是抽取的旧值。 */
   confirmed_fields: Record<string, unknown> | null;
   /** 这条消息带的附件。不带回来的话，人在对话里看不到自己传了什么。 */
@@ -648,6 +659,44 @@ export const linkChain = async (companyIds: string[]): Promise<number> => {
 
 // ── 确认入库（5 秒延迟提交，D48）────────────────────────────────
 export class ConfirmError extends Error {}
+
+export class ProposalItemsError extends ConfirmError {
+  constructor(message: string, public readonly code: string, public readonly status: number) {
+    super(message);
+  }
+}
+
+const proposalItemsFailure = async (res: Response): Promise<never> => {
+  const body = await res.json().catch(() => ({})) as { message?: string; error?: string };
+  const code = body.error ?? `HTTP_${res.status}`;
+  const fallback = res.status === 409
+    ? t('事项版本或状态已变化，请刷新后重新核对。')
+    : t('事项操作失败（HTTP {a}）', { a: res.status });
+  throw new ProposalItemsError(body.message ?? fallback, code, res.status);
+};
+
+/** Only explicitly selected, versioned items cross the confirmation boundary. */
+export const confirmProposalItems = async (stagingId: string, items: ItemSelection[]): Promise<void> => {
+  const res = await authFetch(`/staging/${stagingId}/items/confirm`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+  });
+  if (!res.ok) await proposalItemsFailure(res);
+};
+
+export const cancelProposalItem = async (itemId: string, revision: number): Promise<void> => {
+  const res = await authFetch(`/proposal-items/${itemId}/confirm`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
+  });
+  if (!res.ok) await proposalItemsFailure(res);
+};
+
+/** Withdraws a proposal revision; it does not delete a previous CRM write. */
+export const withdrawProposalItem = async (itemId: string, revision: number): Promise<void> => {
+  const res = await authFetch(`/proposal-items/${itemId}`, {
+    method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }),
+  });
+  if (!res.ok) await proposalItemsFailure(res);
+};
 
 /**
  * 确认入库 → 网关排队，5 秒后写 Twenty。

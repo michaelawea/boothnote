@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import type { ProposalItemView } from './proposal-items';
 
 /**
  * 本地库 = 采集端的真相源。
@@ -116,6 +117,12 @@ export type Note = {
 
   /** 这条属于哪条对话。空 = 由服务端新开一条（一条速记 = 一条对话）。 */
   threadId?: string;
+  /** Stable identity for a conversation captured before the first server response. */
+  clientThreadId?: string;
+  /** Structured answers retain their binding during offline replay. */
+  questionAnswer?: { questionId: string; expectedRevision: string; optionId?: string; text?: string };
+  /** A stale/invalid answer needs a new explicit choice, never automatic reinterpretation. */
+  answerBlocked?: boolean;
   /** 拍照 / 相册 / 文件。上传成功后清空，原件不再占手机空间。 */
   attachments?: LocalAttachment[];
   /** 服务端收下的附件清单（issue #53）。上传成功时由回包填，换台手机由 `pullInbox()` 填。 */
@@ -181,6 +188,8 @@ export type StagingItem = {
   id: string;
   inbox_id: string;
   status: string;
+  proposal_items?: ProposalItemView[];
+  item_summary?: Record<string, unknown> | null;
   /** 语音转写结果。**独立于原文**，重跑转写不动 inbox */
   transcript: string | null;
   /** 人改定的正文（issue #15/#16）。有它就以它为准 —— 前两层原样留着。 */
@@ -225,6 +234,8 @@ export type RecordRow = {
   /** 去对话里确认时要用。补送给 AI 的那些记在 staging 上，服务端已经 coalesce 过。 */
   thread_id: string | null;
   status: string;
+  proposal_items?: ProposalItemView[];
+  item_summary?: Record<string, unknown> | null;
   title: string | null;
   /** 三层文字里最靠下那层（人改定的 > 机器听的 > 人打的），服务端算好。 */
   text: string | null;
@@ -255,6 +266,8 @@ export type RecordRow = {
 
 /** 一条对话。列表页用。 */
 export type Thread = {
+  /** Cache scope on shared devices; legacy unscoped cache entries are not displayed. */
+  recordedBy?: string;
   id: string;
   title: string | null;
   company_code: string | null;
@@ -439,7 +452,7 @@ export const db = new CaptureDb();
  * 所以隔离只能靠每次查询都带上 recordedBy。
  */
 export const myNotes = (userCode: string | undefined) =>
-  db.notes.where('recordedBy').equals(userCode ?? ' never');
+  db.notes.where('recordedBy').equals(userCode ?? '\u0000never');
 
 export const countBySync = async (state: SyncState, userCode?: string) =>
   userCode

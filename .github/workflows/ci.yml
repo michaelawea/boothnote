@@ -11,6 +11,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  agent-flows:
+    name: Agent 业务流（隔离数据库 + 假 CRM）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: services/gateway/package-lock.json
+      - run: npm ci
+        working-directory: services/gateway
+      - run: python3 scripts/test-isolated-agent.py
+      - name: 失败时保留隔离测试日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-flow-logs
+          path: /tmp/boothnote-fixture-stack-*/
   # ── 零依赖的那些：类型 / 单元 / 构建。永远该绿。────────────────────
   checks:
     name: 类型 · 单元 · 构建

@@ -1,9 +1,13 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 
 import { env } from './env.ts';
 import { sql } from './db.ts';
+import { getOrCreateClientThread } from './threadIdentity.ts';
+
+export type IngestConnection = typeof sql | postgres.TransactionSql;
 
 /**
  * 一条速记落库的核心 —— **`POST /inbox` 和渠道适配层（钉钉）共用这一份**（T93）。
@@ -41,6 +45,8 @@ export type IngestInput = {
   deviceCreatedAt: Date | null;
   /** 给了就是续写（会先验属主，不是自己的当没给）。 */
   threadId: string | null;
+  /** Stable local conversation identity; multiple offline notes replay into the same thread. */
+  clientThreadId?: string;
   /** 只有要走 agent 才开对话 —— 纯速记不在 AI 的历史里留空对话（D31）。 */
   toAgent: boolean;
   /** `note` / `followup` / `import` / `dingtalk` */
@@ -71,16 +77,20 @@ export type IngestResult = {
 };
 
 /** 一条 inbox 名下的附件清单，按落库顺序。 */
-export const attachmentsOf = (inboxId: string) =>
-  sql<IngestAttachment[]>`
+export const attachmentsOf = (inboxId: string, connection: IngestConnection = sql) =>
+  connection<IngestAttachment[]>`
     select id, kind, filename as name, coalesce(mime, 'application/octet-stream') as mime, bytes
     from attachment where inbox_id = ${inboxId} order by created_at, id`;
 
-export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
+export const ingestNote = async (input: IngestInput, connection: IngestConnection = sql): Promise<IngestResult> => {
   // 幂等（§4.2 第6条）：同一 clientId 重传直接回原记录
-  const [dup] = await sql<Array<{ id: string; sid: string; thread_id: string | null }>>`
-    select i.id, s.id as sid, i.thread_id from inbox i join staging s on s.inbox_id = i.id
+  const [dup] = await connection<Array<{ id: string; sid: string; thread_id: string | null; user_id: string }>>`
+    select i.id, s.id as sid, i.thread_id, i.user_id from inbox i join staging s on s.inbox_id = i.id
     where i.client_id = ${input.clientId}`;
+  if (dup && dup.user_id !== input.userId) {
+    // UUID collision or malicious reuse must never acknowledge somebody else's original record.
+    throw Object.assign(new Error('client_id_conflict'), { status: 409, code: 'client_id_conflict' });
+  }
   if (dup)
     return {
       duplicate: true,
@@ -89,28 +99,32 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
       threadId: dup.thread_id,
       newMessageId: null,
       audioPath: null,
-      attachments: await attachmentsOf(dup.id),
+      attachments: await attachmentsOf(dup.id, connection),
     };
 
   const audioPath = input.audio ? await saveBlob(input.audio.buf, input.audio.name) : null;
 
   let threadId: string | null = input.threadId ?? null;
   if (threadId) {
-    const [own] = await sql<Array<{ id: string }>>`
+    const [own] = await connection<Array<{ id: string }>>`
       select id from thread where id = ${threadId} and user_id = ${input.userId}`;
     if (!own) threadId = null; // 不是自己的就当没给（作用域在服务端裁）
   }
   // ⚠️ **续写不是 UPDATE**：同一条对话的第二句话是一条新的 inbox 行，
   //    靠 thread_id 串起来（六个必须有的测试之①）。
   if (!threadId && input.toAgent) {
-    const [t] = await sql<Array<{ id: string }>>`
-      insert into thread (user_id, title, company_code)
-      values (${input.userId}, ${(input.text ?? '').slice(0, 40) || null}, ${input.companyCode})
-      returning id`;
-    threadId = t!.id;
+    if (input.clientThreadId) {
+      threadId = await getOrCreateClientThread({ userId: input.userId, clientThreadId: input.clientThreadId, title: (input.text ?? '').slice(0, 40) || undefined }, connection);
+    } else {
+      const [t] = await connection<Array<{ id: string }>>`
+        insert into thread (user_id, title, company_code)
+        values (${input.userId}, ${(input.text ?? '').slice(0, 40) || null}, ${input.companyCode})
+        returning id`;
+      threadId = t!.id;
+    }
   }
 
-  const [row] = await sql<Array<{ id: string }>>`
+  const [row] = await connection<Array<{ id: string }>>`
     insert into inbox (client_id, user_id, company_code, text, audio_path, audio_mime,
                        audio_seconds, visit_label, device_created_at, thread_id, source)
     values (${input.clientId}, ${input.userId}, ${input.companyCode},
@@ -122,7 +136,7 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
   const attachments: IngestAttachment[] = [];
   for (const f of input.files ?? []) {
     const rel = await saveBlob(f.buf, f.name);
-    const [a] = await sql<Array<{ id: string }>>`
+    const [a] = await connection<Array<{ id: string }>>`
       insert into attachment (inbox_id, kind, filename, mime, bytes, path)
       values (${row!.id}, ${f.kind}, ${f.name}, ${f.mime}, ${f.buf.length}, ${rel})
       returning id`;
@@ -131,7 +145,7 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
 
   // 客户端已转好的就别再转一遍（issue #15）——存 transcript 不存 text，三层各答一个问题
   const clientTranscript = String(input.transcript ?? '').trim().slice(0, 20_000) || null;
-  const [st] = await sql<Array<{ id: string }>>`
+  const [st] = await connection<Array<{ id: string }>>`
     insert into staging (inbox_id, thread_id, transcript)
     values (${row!.id}, ${threadId}, ${audioPath ? clientTranscript : null})
     returning id`;
@@ -140,13 +154,13 @@ export const ingestNote = async (input: IngestInput): Promise<IngestResult> => {
   let newMessageId: string | null = null;
   if (threadId) {
     if (input.text) {
-      const [msg] = await sql<Array<{ id: string }>>`
+      const [msg] = await connection<Array<{ id: string }>>`
         insert into thread_message (thread_id, role, text, inbox_id)
         values (${threadId}, 'user', ${input.text}, ${row!.id})
         returning id`;
       newMessageId = msg!.id;
     }
-    await sql`update thread set last_message_at = now() where id = ${threadId}`;
+    await connection`update thread set last_message_at = now() where id = ${threadId}`;
   }
 
   return {

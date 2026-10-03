@@ -1,4 +1,6 @@
 import { env } from './env.ts';
+import { sql } from './db.ts';
+import { DefiniteItemOperationError } from './item-operations.ts';
 import { companyCountry, normalizeCountry } from '../../../shared/countries.mjs';
 import {
   portalProjectBody,
@@ -62,6 +64,39 @@ const call = async (
   }
   if (!res.ok) throw new Error(`Twenty ${method} ${path} → ${res.status} ${text.slice(0, 300)}`);
   return json;
+};
+
+/** Bounded read surface for candidate discovery and final target validation. */
+export const twentyRead = (path: string): Promise<any> => {
+  if (!path.startsWith('/rest/')) throw new Error('invalid_twenty_read_path');
+  return call('GET', path, undefined, 0, 8_000);
+};
+
+export type TwentyRecordType='supportCase'|'project'|'workItem'|'visit'|'productFitment'|'opportunity'|'projectDoc';
+export const readTwentyRecord = async (type: TwentyRecordType, id: string): Promise<any | null> => {
+  const plural = { supportCase: 'supportCases', project: 'projects', workItem: 'workItems',visit:'visits',productFitment:'productFitments',opportunity:'opportunities',projectDoc:'projectDocs' }[type];
+  if (!plural || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('invalid_target_id');
+  try {
+    const r = await twentyRead(`/rest/${plural}/${id}`);
+    const record = r?.data?.[type] ?? r?.data;
+    if (!record || typeof record !== 'object' || record.id !== id) throw new Error('invalid_target_response');
+    return record;
+  } catch (error) {
+    if ((error as Error).message.includes('→ 404 ')) return null;
+    throw error;
+  }
+};
+
+/** A session lock serializes gateway read/append/write across worker processes. */
+export const withTwentyTargetLock = async <T>(object: string, id: string, execute: () => Promise<T>): Promise<T> => {
+  const connection=await sql.reserve();
+  const key=`crm:${object}:${id}`;
+  try {
+    const [r]=await connection<Array<{locked:boolean}>>`select pg_try_advisory_lock(hashtextextended(${key},0)) as locked`;
+    if (!r?.locked) throw new DefiniteItemOperationError('目标正在由另一轮写入，请稍后核对');
+    try { return await execute(); }
+    finally { await connection`select pg_advisory_unlock(hashtextextended(${key},0))`; }
+  } finally { connection.release(); }
 };
 
 export type Company = {
@@ -1147,16 +1182,29 @@ export const appendToSupportCase = async (
     by: string;
     deliveryBatch?: string | null;
     affectedUnits?: number | null;
+    operationId?: string;
+    expectedCompanyId?: string;
   },
 ) => {
-  const r = await call('GET', `/rest/supportCases/${id}`);
-  const cur = (r?.data?.supportCase ?? r?.data) ?? {};
+  const append = async () => {
+  let cur: any;
+  try { cur=await readTwentyRecord('supportCase',id); }
+  catch { throw new DefiniteItemOperationError('目标售后单读取失败，尚未追加'); }
+  if (!cur || cur.deletedAt) throw new DefiniteItemOperationError('目标售后单已不存在或已删除');
+  if (input.expectedCompanyId && (cur.companyId??cur.company?.id)!==input.expectedCompanyId) {
+    throw new DefiniteItemOperationError('目标售后单客户已变更');
+  }
   const prev = cur?.issueDescription?.markdown ?? '';
+  const marker=input.operationId ? `<!-- boothnote-operation:${input.operationId} -->` : '';
+  if (marker && prev.includes(marker)) return;
+  if (['CLOSED','RESOLVED'].includes(String(cur.caseStatus).toUpperCase())) {
+    throw new DefiniteItemOperationError('目标售后单已经结束，不能追加或重新打开');
+  }
   const stamp = new Date().toISOString().slice(0, 10);
 
   const body: Record<string, unknown> = {
     issueDescription: {
-      markdown: `${prev}\n\n---\n\n### 进展 · ${stamp} · ${input.by}\n\n${input.progress}`.trim(),
+      markdown: `${prev}\n\n---\n\n### 进展 · ${stamp} · ${input.by}\n\n${input.progress}${marker ? `\n\n${marker}` : ''}`.trim(),
     },
   };
   if (input.caseStatus) body.caseStatus = sel(input.caseStatus);
@@ -1176,6 +1224,8 @@ export const appendToSupportCase = async (
   }
 
   await call('PATCH', `/rest/supportCases/${id}`, body);
+  };
+  return withTwentyTargetLock('supportCase',id,append);
 };
 
 /**
@@ -1192,8 +1242,21 @@ export const updateSupportCase = async (
     severity?: string | null;
     deliveryBatch?: string | null;
     affectedUnits?: number | null;
+    expectedCompanyId?: string;
   },
 ) => {
+  const update=async()=> {
+  let current: any;
+  if (patch.expectedCompanyId) {
+    try { current=await readTwentyRecord('supportCase',id); }
+    catch { throw new DefiniteItemOperationError('目标售后单读取失败，尚未修改'); }
+    if (!current || current.deletedAt) throw new DefiniteItemOperationError('目标售后单已不存在或已删除');
+    if ((current.companyId??current.company?.id)!==patch.expectedCompanyId) throw new DefiniteItemOperationError('目标售后单客户已变更');
+    if (['CLOSED','RESOLVED'].includes(String(current.caseStatus).toUpperCase()) &&
+        patch.caseStatus && sel(patch.caseStatus)!==String(current.caseStatus).toUpperCase()) {
+      throw new DefiniteItemOperationError('目标售后单已经结束，不能重新打开');
+    }
+  }
   const body: Record<string, unknown> = {};
   if (patch.caseStatus) body.caseStatus = sel(patch.caseStatus);
   if (patch.severity) body.severity = sel(patch.severity);
@@ -1203,11 +1266,13 @@ export const updateSupportCase = async (
   }
   if (!Object.keys(body).length) return;
   if (['RESOLVED', 'CLOSED'].includes(sel(patch.caseStatus ?? ''))) {
-    const r = await call('GET', `/rest/supportCases/${id}`);
-    const cur = (r?.data?.supportCase ?? r?.data) ?? {};
+    const r = current ? null : await call('GET', `/rest/supportCases/${id}`);
+    const cur = current ?? r?.data?.supportCase ?? r?.data ?? {};
     if (!cur.resolvedAt) body.resolvedAt = new Date().toISOString();
   }
   await call('PATCH', `/rest/supportCases/${id}`, body);
+  };
+  return withTwentyTargetLock('supportCase',id,update);
 };
 
 export const listIntelValues = async (companyId: string) => {

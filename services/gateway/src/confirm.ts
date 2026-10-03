@@ -41,12 +41,20 @@ import {
   softDeleteRecords,
   isDeletableObject,
   type RecordRef,
+  readTwentyRecord,
 } from './twenty.ts';
 import { computeGaps } from './gaps.ts';
 // D108：改口从上一版继承过来的记录所有权（issue #37）
 import type { Inheritance } from './supersede.ts';
 import { suggestProjectCode } from './projectCode.ts';
 import { parseDecisionWindow } from './window.ts';
+import { validateTargetBinding } from './targetCandidates.ts';
+import { sharedRecordReferences } from './sharedRecords.ts';
+import { durableItemOperation, UnknownItemOperationError } from './item-operations.ts';
+import {
+  loadItemCommitSubject, persistItemCommit, recordItemLink, claimDueProposalItems,
+  failProposalItemCommit, hasProposalItems, type ItemCommitSubject,
+} from './proposal-items.ts';
 
 /**
  * 确认入库 —— **5 秒延迟提交**（D48）。
@@ -341,8 +349,8 @@ export const cancelConfirm = async (stagingId: string): Promise<boolean> => {
 };
 
 /** 真正写 Twenty。**整个系统里只有这一个函数会往 CRM 写东西。** */
-export const commitToTwenty = async (stagingId: string): Promise<Record<string, string>> => {
-  const [st] = await sql<
+export const commitToTwenty = async (stagingId: string, itemSubject?: ItemCommitSubject): Promise<Record<string, string>> => {
+  const [stored] = itemSubject ? [itemSubject] : await sql<
     Array<{
       id: string;
       inbox_id: string;
@@ -355,7 +363,9 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
     }>
   >`select id, inbox_id, extracted, confirm_payload, confirm_by, twenty_refs, replaces
     from staging where id = ${stagingId}`;
-  if (!st?.confirm_payload?.companyId) throw new Error('没有待提交的确认');
+  if (!stored?.confirm_payload?.companyId) throw new Error('没有待提交的确认');
+  const st = { ...stored, confirm_payload: stored.confirm_payload };
+  if (!itemSubject && await hasProposalItems(stagingId)) throw new Error('multi_item_endpoint_required');
 
   /**
    * ── D75：update 模式（重录）───────────────────────────────────────
@@ -402,6 +412,8 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
     const doomed = (Array.isArray(inherited!.createdRecords) ? inherited!.createdRecords : [])
       .filter((r: any) => r?.id && isDeletableObject(String(r.object)))
       .map((r: any) => ({ object: String(r.object), id: String(r.id), name: r.name }) as RecordRef);
+    const shared=await sharedRecordReferences(doomed,inherited!.stagingId);
+    if (shared.length) throw new Error('RECOMMIT_CONFLICT:旧客户记录已被其他事项使用，不能随改客户删除；请先核对共享记录。');
     const r = doomed.length ? await softDeleteRecords(doomed) : { deleted: [], failed: [] };
     console.log(
       `  ↪️ 改口换了客户：软删上一版 ${r.deleted.length}/${doomed.length} 条记录，按新客户重建` +
@@ -442,8 +454,89 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
    * `fields` 已经在 `sanitizeFieldEdits()` 里过过白名单，这里拿到的一定是合法值。
    */
   const f = { ...st.extracted, ...st.confirm_payload.fields } as Record<string, any>;
-
+  // The operation journal hashes the acknowledged draft, never values re-read from CRM on a retry.
+  const acknowledgedFields=structuredClone(f);
+  const requestedProject = { ...(f.project ?? {}) } as Record<string,unknown>;
   const company = (await listCompanies()).find((c) => c.id === st.confirm_payload!.companyId);
+  const boundTarget=itemSubject?.target??f.targetBinding??null;
+  if (!itemSubject && f.targetBinding) {
+    await validateTargetBinding(f.targetBinding, st.confirm_payload.companyId, st.confirm_by ?? undefined);
+    if (f.targetBinding.type === 'supportCase') st.confirm_payload.supportCaseId = f.targetBinding.id;
+    if (f.targetBinding.type === 'project') {
+      f.projectCode = f.targetBinding.code;
+      f.project = { ...(f.project ?? {}), projectCode: f.targetBinding.code };
+    }
+  }
+  if (boundTarget?.type === 'project') {
+    const target = await readTwentyRecord('project', boundTarget.id);
+    f.projectCode = target?.projectCode;
+    f.project = { ...(f.project ?? {}), projectCode: target?.projectCode, name: f.project?.name ?? target?.name };
+  }
+  if (boundTarget?.type === 'workItem') {
+    const target = await readTwentyRecord('workItem', boundTarget.id);
+    if (!target || target.deletedAt || (target.companyId??target.company?.id)!==st.confirm_payload.companyId) throw new Error('RECOMMIT_CONFLICT:选定任务已变化，不能更新。');
+    if (f.workItems?.length>1 || (f.workItems?.[0]?.itemCode && f.workItems[0].itemCode!==target.itemCode)) throw new Error('RECOMMIT_CONFLICT:选定任务与提案中的任务编号不一致。');
+    const project = target?.projectId ? await readTwentyRecord('project', target.projectId) : null;
+    if (project) {
+      if ((project.companyId??project.company?.id)!==st.confirm_payload.companyId) throw new Error('RECOMMIT_CONFLICT:任务线程的父项目属于其他客户，不能更新。');
+      f.projectCode=project.projectCode; f.project={ ...(f.project ?? {}),projectCode:project.projectCode,name:project.name };
+    }
+    f.workItems=[{ title:target.name,body:f.details,
+      threadType:target.threadType,itemStatus:target.itemStatus, ...(f.workItems?.[0] ?? {}),itemCode:target.itemCode }];
+  }
+  // Explicitly new project items cannot merge merely because customer + category match.
+  if (itemSubject && (f.project?.name || f.recordType === 'project') && !f.projectCode && !f.project?.projectCode && !prev.projectId) {
+    const code=`${company?.code ?? 'ITEM'}-I${itemSubject.itemId.replace(/-/g,'').slice(0,12).toUpperCase()}`;
+    f.project={ ...(f.project ?? {}),projectCode:code }; f.projectCode=code;
+  }
+  // Reject code collisions and foreign ownership before the first core mutation.
+  const checkedProjects=new Map<string,Awaited<ReturnType<typeof findProjectByCode>>>();
+  const checkedWorkItems=new Map<string,Awaited<ReturnType<typeof findWorkItemByCode>>>();
+  if (itemSubject) {
+    const projectCode=String(f.project?.projectCode??f.projectCode??'').trim();
+    if (projectCode) {
+      const existing=await findProjectByCode(projectCode);
+      if (existing) {
+        if (existing.companyId!==st.confirm_payload.companyId) throw new Error('RECOMMIT_CONFLICT:项目编号属于其他客户，不能修改。');
+        const persistedTarget=prev.projectId ?? (itemSubject.target?.type==='project' ? itemSubject.target.id : null);
+        const workParent=itemSubject.target?.type==='workItem' ? (await readTwentyRecord('workItem',itemSubject.target.id))?.projectId : null;
+        const [createOp]=await sql<Array<{yes:boolean}>>`select exists(select 1 from item_operation where revision_id=${itemSubject.id} and role='project:create') as yes`;
+        if (existing.id!==persistedTarget && existing.id!==workParent && !createOp?.yes) throw new Error('RECOMMIT_CONFLICT:项目编号已存在，请明确选择原项目后再继续。');
+        const record=await readTwentyRecord('project',existing.id);
+        if (!record || record.deletedAt) throw new Error('RECOMMIT_CONFLICT:项目已不存在或已删除。');
+      }
+      checkedProjects.set(projectCode,existing);
+    }
+    const links=await sql<Array<{record_id:string}>>`select record_id from item_record_link where item_id=${itemSubject.itemId} and object_type='workItem'`;
+    for (const w of Array.isArray(f.workItems)?f.workItems:[]) {
+      const code=String(w?.itemCode??'').trim();
+      if (!code) continue;
+      const existing=await findWorkItemByCode(code);
+      if (existing) {
+        const record=await readTwentyRecord('workItem',existing.id);
+        if (!record || record.deletedAt || (record.companyId??record.company?.id)!==st.confirm_payload.companyId) throw new Error('RECOMMIT_CONFLICT:任务编号属于其他客户或任务已删除。');
+        const [createOp]=await sql<Array<{yes:boolean}>>`select exists(select 1 from item_operation where revision_id=${itemSubject.id} and role=${`work:${code}:create`}) as yes`;
+        if (itemSubject.target?.id!==existing.id && !links.some((l)=>l.record_id===existing.id) && !createOp?.yes) throw new Error('RECOMMIT_CONFLICT:任务编号已存在，请明确选择原任务后再继续。');
+      }
+      checkedWorkItems.set(code,existing);
+    }
+  }
+  const objectOfRole: Record<string,string> = {visit:'visit',support:'supportCase',fitment:'productFitment',project:'project',opportunity:'opportunity',work:'workItem',doc:'projectDoc'};
+  const plannedCreate = async (role:string):Promise<boolean> => {
+    if (!itemSubject) return false;
+    const [r]=await sql<Array<{yes:boolean}>>`select exists(select 1 from item_operation where revision_id=${itemSubject.id} and role=${role}) as yes`;
+    return r?.yes===true;
+  };
+  const op = <T>(role: string, execute: () => Promise<T>, targetId?:string): Promise<T> => itemSubject
+    ? durableItemOperation(itemSubject.id, role, { companyId: st.confirm_payload!.companyId, fields: acknowledgedFields, target: itemSubject.target, ...(targetId?{targetId}:{}) }, async () => {
+      const result=await execute();
+      if (role.endsWith(':create') && objectOfRole[role.split(':')[0]!]) {
+        if (typeof result!=='string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(result)) throw new Error('CRM 写入未返回有效记录 ID，需要核对远端结果');
+        await recordItemLink(itemSubject.itemId,{object:objectOfRole[role.split(':')[0]!]!,id:result,name:String(f.summary ?? f.project?.name ?? role)},true);
+      }
+      return result;
+    }) : execute();
+
 
   /**
    * 🔴 **正文永远要落在某个地方。**
@@ -529,16 +622,16 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
   if (redo && prev.visitId) {
     visitId = prev.visitId;
     // 只更新正文 —— name 里带着首次入库的日期，那是「这条什么时候记的」，别改写历史
-    await updateVisit(visitId, { visitSummary: body || null });
+    await op('visit:update', () => updateVisit(visitId, { visitSummary: body || null }),visitId);
   } else {
-    visitId = await createVisit({
+    visitId = await op('visit:create', () => createVisit({
       name: visitName,
       visitType: 'CUSTOMER_VISIT',
       companyId: st.confirm_payload.companyId,
       recordedById: contributorId,
       startedAt: new Date().toISOString(),
       visitSummary: body || null,
-    });
+    }));
     made.push({ object: 'visit', id: visitId, name: visitName });
   }
 
@@ -574,28 +667,44 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
        * 而重录能改的本来就只有枚举格 —— 正文没变，再 append 一遍就是把
        * 同一段话写两次。追加型（supportCaseAppended）和新建型走同一条。
        */
-      await updateSupportCase(prev.supportCaseId, {
+      if (itemSubject && itemSubject.previousFields &&
+          (itemSubject.previousFields.details !== f.details || itemSubject.previousFields.summary !== f.summary)) {
+        await op('support:correction', () => appendToSupportCase(prev.supportCaseId!, {
+          progress: [`更正 / 续写（事项 ${itemSubject.itemId} · 第 ${itemSubject.revision} 版）`,issue,trace].join('\n\n'),
+          by:u?.display_name ?? '系统',operationId:`${itemSubject.id}:support:correction`,expectedCompanyId:st.confirm_payload.companyId,
+        }),prev.supportCaseId);
+      }
+      await op('support:update', () => updateSupportCase(prev.supportCaseId!, {
         caseStatus: f.caseStatus || null,
         severity: f.severity || null,
         deliveryBatch: f.deliveryBatch ?? null,
         affectedUnits: f.affectedUnits ?? null,
-      });
+        expectedCompanyId:st.confirm_payload.companyId,
+      }),prev.supportCaseId);
       refs.supportCaseId = prev.supportCaseId;
       if (prev.supportCaseAppended) refs.supportCaseAppended = prev.supportCaseAppended;
     } else if (st.confirm_payload.supportCaseId) {
-      await appendToSupportCase(st.confirm_payload.supportCaseId, {
+      if (itemSubject?.action==='update') {
+        await op('support:update',()=>updateSupportCase(st.confirm_payload.supportCaseId!,{
+          caseStatus:f.caseStatus||null,severity:f.severity||null,deliveryBatch:f.deliveryBatch??null,
+          affectedUnits:f.affectedUnits??null,expectedCompanyId:st.confirm_payload.companyId,
+        }),st.confirm_payload.supportCaseId);
+      } else await op('support:append', () => appendToSupportCase(st.confirm_payload.supportCaseId!, {
         progress: [issue, trace].filter(Boolean).join('\n\n'),
         caseStatus: f.caseStatus || null,
         severity: f.severity || null,
         by: u?.display_name ?? '系统',
         deliveryBatch: f.deliveryBatch ?? null,
         affectedUnits: f.affectedUnits ?? null,
-      });
+        expectedCompanyId:st.confirm_payload.companyId,
+        ...(itemSubject ? {operationId:`${itemSubject.id}:support:append`} : {}),
+      }),st.confirm_payload.supportCaseId);
       refs.supportCaseId = st.confirm_payload.supportCaseId;
-      refs.supportCaseAppended = 'yes'; // 是追加不是新建，留痕
+      if (itemSubject?.action==='update') refs.supportCaseUpdated='yes';
+      else refs.supportCaseAppended = 'yes'; // 是追加不是新建，留痕
     } else {
       const caseName = f.summary || '售后问题';
-      refs.supportCaseId = await createSupportCase({
+      refs.supportCaseId = await op('support:create', () => createSupportCase({
         name: caseName,
         companyId: st.confirm_payload.companyId,
         // details 是全文；没有 details 才退回到那句 summary。客户链走 chainLine 去重。
@@ -606,7 +715,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
         recordedById: contributorId,
         deliveryBatch: f.deliveryBatch ?? null,
         affectedUnits: f.affectedUnits ?? null,
-      });
+      }));
       made.push({ object: 'supportCase', id: refs.supportCaseId, name: caseName });
     }
   } else if (f.category) {
@@ -624,16 +733,16 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
 
     if (redo && prev.productFitmentId) {
       // D75 重录：按 ref 更新。溯源字段（sourceNote/sourceInboxId/visitId）永不动
-      await updateProductFitment(prev.productFitmentId, {
+      await op('fitment:update', () => updateProductFitment(prev.productFitmentId!, {
         name: [CATEGORY_LABELS[f.category] ?? f.category, f.modelName].filter(Boolean).join(' · '),
         category: f.category,
         modelName: f.modelName ?? null,
         supplierId,
         confidence: f.sourceConfidence || null,
-      });
+      }),prev.productFitmentId);
       refs.productFitmentId = prev.productFitmentId;
     } else {
-      refs.productFitmentId = await createProductFitment({
+      refs.productFitmentId = await op('fitment:create', () => createProductFitment({
         /**
          * 标题列给人看，**不给机器看**。
          *
@@ -657,7 +766,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
         recordedById: contributorId,
         visitId,
         recordedAt: new Date().toISOString(),
-      });
+      }));
       made.push({
         object: 'productFitment',
         id: refs.productFitmentId,
@@ -703,31 +812,31 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
        * ⚠️ 商机自己的品类**不随之变更**（D56：那是它的身份键），refs 里如实标注。
        */
       if (redo && prev.opportunityId) {
-        await updateOpportunity(prev.opportunityId, {
+        await op('opportunity:update', () => updateOpportunity(prev.opportunityId!, {
           stage,
           nextDecisionWindow: windowDate,
           budgetEur: f.budgetEur ?? null,
           ...oppExtras,
-        });
+        }),prev.opportunityId);
         refs.opportunityId = prev.opportunityId;
         if ((st.confirm_payload.fields as any)?.category) {
           refs.oppCategoryUnchanged = '重录改了品类，但商机的品类是身份键（D56），未随之变更';
         }
       } else {
-      const existing = await findOpportunity(st.confirm_payload.companyId, f.category);
+      const existing = await plannedCreate('opportunity:create') ? null : await findOpportunity(st.confirm_payload.companyId, f.category);
       if (existing) {
-        await updateOpportunity(existing.id, {
+        await op('opportunity:update', () => updateOpportunity(existing.id, {
           stage,
           nextDecisionWindow: windowDate,
           budgetEur: f.budgetEur ?? null,
           ...oppExtras,
-        });
+        }),existing.id);
         refs.opportunityId = existing.id;
         refs.opportunityWas = existing.stage; // 从哪一格推过来的，留痕
       } else {
         // 名字是人在 Twenty 里看到的那一行 —— 别让他看到 DISTRIBUTION_BOX
         const oppName = `${company?.name ?? '客户'} · ${CATEGORY_LABELS[f.category] ?? f.category}`;
-        refs.opportunityId = await createOpportunity({
+        refs.opportunityId = await op('opportunity:create', () => createOpportunity({
           name: oppName,
           companyId: st.confirm_payload.companyId,
           category: f.category,
@@ -736,7 +845,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
           originVisitId: visitId,
           budgetEur: f.budgetEur ?? null,
           ...oppExtras,
-        });
+        }));
         made.push({ object: 'opportunity', id: refs.opportunityId, name: oppName });
       }
       }
@@ -829,7 +938,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
      * 🔴 **幂等：编号撞了就更新，绝不新建。**
      * test_example T02 的验收断言：「项目编号唯一；重复提交时不创建第二个相同编号的项目」。
      */
-    const existing = code ? await findProjectByCode(code) : null;
+    const existing = code && !await plannedCreate('project:create') ? checkedProjects.has(code) ? checkedProjects.get(code)! : await findProjectByCode(code) : null;
 
     /**
      * D75 重录的冲突守卫：目标永远是**上一次那个项目**（prev.projectId）。
@@ -859,21 +968,23 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
       recordedById: contributorId,
       sourceInboxId: st.inbox_id,
     };
+    const updateBase=itemSubject||boundTarget?.type==='project'||boundTarget?.type==='workItem' ? Object.fromEntries(Object.entries(base).filter(([key])=>
+      key==='projectCode' || Object.hasOwn(requestedProject,key))) : base;
     if (redo && prev.projectId) {
       /**
        * D75：redo 的目标钉死在上一次那个项目上 —— 哪怕编号改成了新的
        * （改编号 = 给 prev 那条换名牌，不是新建一条）。上面的冲突守卫已经
        * 挡掉了「新编号属于别的项目」，走到这里 update 是安全的。
        */
-      await updateProject(prev.projectId, base);
+      await op('project:update', () => updateProject(prev.projectId!, updateBase),prev.projectId);
       projectId = prev.projectId;
       refs.projectUpdated = code || prev.projectId;
     } else if (existing) {
-      await updateProject(existing.id, base);
+      await op('project:update', () => updateProject(existing.id, updateBase),existing.id);
       projectId = existing.id;
       refs.projectUpdated = existing.projectCode || existing.id;
     } else if (base.projectCode) {
-      projectId = await createProject(base as never);
+      projectId = await op('project:create', () => createProject(base as never));
       made.push({ object: 'project', id: projectId, name: base.name });
     } else {
       /**
@@ -898,9 +1009,9 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
    * 上面已经建过 visit 了，这里只把它挂到项目上并改类型。
    */
   if (projectId && (workItems.length || f.recordType === 'followup')) {
-    await updateVisit(visitId, { projectId, visitType: 'PROJECT_FOLLOWUP' }).catch((e) =>
-      console.warn(`  ⚠️ 跟进没挂上项目：${(e as Error).message.slice(0, 120)}`),
-    );
+    if (itemSubject) await op('visit:project-link',()=>updateVisit(visitId,{projectId,visitType:'PROJECT_FOLLOWUP'}),visitId);
+    else await updateVisit(visitId, { projectId, visitType: 'PROJECT_FOLLOWUP' }).catch((e) =>
+      console.warn(`  ⚠️ 跟进没挂上项目：${(e as Error).message.slice(0, 120)}`));
     refs.followupId = visitId;
   }
 
@@ -920,7 +1031,9 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
        *
        * 项目那边一直是「撞了就 updateProject」，线程这边漏了这一半。
        */
-      const dup = await findWorkItemByCode(code).catch(() => null);
+      const dup = await plannedCreate(`work:${code}:create`) ? null :
+        itemSubject ? checkedWorkItems.get(code) ?? null : await findWorkItemByCode(code).catch(() => null);
+      if (boundTarget?.type==='workItem' && (!dup || dup.id!==boundTarget.id)) throw new Error('RECOMMIT_CONFLICT:选定任务编号已经变化，请重新核对目标。');
       const input = {
         itemCode: code,
         name: w.title,
@@ -943,12 +1056,12 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
       if (dup) {
         // 已经有这条编号 → 把这次说的覆盖上去。没提到的格子一个不动
         // （`workItemBody` 里全是「有值才带」），所以「这条改成紧急」不会抹掉截止日期。
-        await updateWorkItem(dup.id, input);
+        await op(`work:${code}:update`, () => updateWorkItem(dup.id, input),dup.id);
         byCode.set(code, dup.id);
         updatedItems++;
         continue;
       }
-      const id = await createWorkItem(input);
+      const id = await op(`work:${code}:create`, () => createWorkItem(input));
       byCode.set(code, id);
       made.push({ object: 'workItem', id, name: `${code} ${w.title ?? ''}`.trim() });
     }
@@ -961,7 +1074,8 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
         .filter(Boolean)[0];
       const target = first ? byCode.get(first) : null;
       if (self && target && self !== target) {
-        await setWorkItemBlockedBy(self, target).catch(() => {});
+        if (itemSubject) await op(`work:${String(w?.itemCode??'').trim()}:dependency`,()=>setWorkItemBlockedBy(self,target),self);
+        else await setWorkItemBlockedBy(self, target).catch(() => {});
       }
     }
     refs.workItems = String(byCode.size);
@@ -970,11 +1084,12 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
     if (updatedItems) refs.workItemsUpdated = String(updatedItems);
   }
 
-  if (redo && prev.projectDocId) {
+  const docChanged=itemSubject && itemSubject.previousFields && JSON.stringify(itemSubject.previousFields.document ?? null)!==JSON.stringify(docProposal ?? null);
+  if (redo && prev.projectDocId && !docChanged) {
     // D75：文档内容不在重录可改的格子里 —— 没变的东西不重写，留住原 ref 即可
     refs.projectDocId = prev.projectDocId;
   } else if (docProposal?.content) {
-    refs.projectDocId = await createProjectDoc({
+    refs.projectDocId = await op('doc:create', () => createProjectDoc({
       name: docProposal.name,
       docCode: docProposal.docCode,
       projectId,
@@ -987,7 +1102,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
       attachmentId: docProposal.attachmentId ?? atts[0]?.id ?? null,
       recordedById: contributorId,
       sourceInboxId: st.inbox_id,
-    });
+    }));
     made.push({ object: 'projectDoc', id: refs.projectDocId, name: docProposal.name });
   }
 
@@ -1058,7 +1173,7 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
    *    直接写进去会把首次入库建的那几条从清单里抹掉 —— 于是删除时漏删，
    *    而且漏得静悄悄。按 id 去重合并。
    */
-  const [prevRow] = await sql<Array<{ created: unknown }>>`
+  const [prevRow] = itemSubject ? [{ created: itemSubject.createdRecords }] : await sql<Array<{ created: unknown }>>`
     select created_records as created from staging where id = ${st.id}`;
   const known = new Map<string, { object: string; id: string; name: string }>();
   for (const m of Array.isArray(prevRow?.created) ? (prevRow!.created as any[]) : []) {
@@ -1097,6 +1212,10 @@ export const commitToTwenty = async (stagingId: string): Promise<Record<string, 
    *    留着的话，从看板上删那一行会去软删**现在归新那一行管**的记录。
    *    所有权必须是排他的。
    */
+  if (itemSubject) {
+    await persistItemCommit(itemSubject, refs, [...known.values()]);
+    return refs;
+  }
   await sql.begin(async (tx) => {
     await tx`update staging set status = 'confirmed', resolved_company_id = ${st.confirm_payload!.companyId},
               twenty_refs = ${sql.json(refs)},
@@ -1164,6 +1283,7 @@ export const claimDue = async (limit = 20) =>
     where id in (
       select id from staging
       where status = 'confirming' and confirm_after <= now()
+        and not exists(select 1 from proposal_revision r where r.staging_id=staging.id)
       order by confirm_after
       limit ${limit}
       for update skip locked
@@ -1212,6 +1332,23 @@ const tick = async () => {
   const due = await claimDue();
   for (let i = 0; i < due.length; i += POOL) {
     await Promise.all(due.slice(i, i + POOL).map((row) => commitOne(row.id)));
+  }
+  const itemDue = await claimDueProposalItems();
+  for (let i = 0; i < itemDue.length; i += POOL) {
+    await Promise.all(itemDue.slice(i, i + POOL).map((row) => commitProposalItem(row.id)));
+  }
+};
+
+/** The writer is shared; the item revision owns its operation journal and current record links. */
+export const commitProposalItem = async (revisionId: string): Promise<Record<string, string> | null> => {
+  try {
+    const subject = await loadItemCommitSubject(revisionId);
+    return await commitToTwenty(revisionId, subject);
+  } catch (error) {
+    const [unknown] = await sql<Array<{ yes: boolean }>>`select exists(select 1 from item_operation
+      where revision_id=${revisionId} and state in ('running','unknown')) as yes`;
+    await failProposalItemCommit(revisionId, (error as Error).message, error instanceof UnknownItemOperationError || unknown?.yes === true);
+    return null;
   }
 };
 

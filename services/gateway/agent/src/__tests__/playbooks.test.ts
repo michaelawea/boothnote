@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { systemPrompt } from '../prompt.ts';
 import { __resetPlaybooks, loadPlaybooks, playbook, playbookIndex, playbookNames } from '../skills.ts';
 import { buildSkills, newContext } from '../tools/index.ts';
+import { env } from '../host.ts';
 
 /**
  * 标准 SKILL.md 技能库（D72）。
@@ -87,6 +88,9 @@ describe('用血换来的判据一条没丢', () => {
   it('project 手册：propose_project 义务 · 编号不自编 · milestone 拆解 · dueDate 必填', () => {
     const t = playbook('project')!.content;
     assert.match(t, /必须调一次 `propose_project`/);
+    assert.match(t, /多事项路径用 `propose_records`/);
+    assert.match(t, /fields 带完整 project\/workItems\/docs/);
+    assert.match(t, /不能再压回一个 `propose_fields`/);
     assert.match(t, /不要自己编一个编号/);
     assert.match(t, /threadType=milestone/);
     assert.match(t, /`dueDate` 必填/);
@@ -112,10 +116,28 @@ describe('用血换来的判据一条没丢', () => {
     assert.match(t, /不要推测图里没写的/);
   });
 
-  it('核心 prompt 仍然保住三条不能丢的铁律（propose_fields 强制 · recordType 判据 · 不输出人名）', () => {
+  it('多事项prompt要求实际提案，并保住单项项目义务和完整多事项字段', () => {
     const p = systemPrompt(ctx());
-    assert.match(p, /必须至少调一次 `propose_fields`/);
+    assert.match(p, /必须至少调一次 `propose_fields` 或 `propose_records`/);
     assert.match(p, /project 或 followup 时，这一轮必须再调一次 `propose_project`/);
+    assert.match(p, /project\/workItems\/docs 完整写在 propose_records 的 fields/);
+    assert.match(p, /propose_records 已经保存多事项后，不再用 propose_fields/);
     assert.match(p, /绝对不要输出任何自然人姓名/);
+  });
+
+  it('渠道和停用开关保住单项提案义务，推送/拉取手册不要求未注册的多事项工具', async () => {
+    const previous = Object.getOwnPropertyDescriptor(env, 'agentMultiItems')!;
+    try {
+      for (const source of ['dingtalk', 'pwa']) {
+        Object.defineProperty(env, 'agentMultiItems', { ...previous, value: source === 'dingtalk' });
+        const current = ctx({ source, pushPlaybooks: ['project', 'support'] });
+        const p = systemPrompt(current);
+        assert.match(p, /必须至少调一次 `propose_fields`/);
+        assert.match(p, /必须再调一次 `propose_project`/);
+        assert.doesNotMatch(p, /propose_records/);
+        const reader = buildSkills(current).find((skill) => skill.name === 'read_skill')!;
+        assert.doesNotMatch((await reader.execute({ name: 'project' })).text, /propose_records/);
+      }
+    } finally { Object.defineProperty(env, 'agentMultiItems', previous); }
   });
 });

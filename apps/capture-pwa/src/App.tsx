@@ -17,6 +17,8 @@ import { Onboarding, needsOnboarding } from './pages/Onboarding';
 import { IconBoard, IconBuilding, IconMic, IconSpark, IconUser } from './icons';
 import { t as tr } from './i18n';
 import { applyUpdate, setBusy, useUpdate } from './update';
+import { browserStore } from './draft';
+import { assistantUiAvailable, readAgentUi, type AgentUi } from './agent-ui-preference';
 
 type Tab = 'note' | 'companies' | 'board' | 'me';
 
@@ -38,11 +40,22 @@ export const App = () => {
   const [tab, setTab] = useState<Tab>('note');
   const [chat, setChat] = useState(false);
   const [chatThread, setChatThread] = useState<string | null>(null);
+  const [chatUi, setChatUi] = useState<AgentUi>('current');
   const [online, setOnline] = useState(navigator.onLine);
   const [pending, setPending] = useState(0);
   const [onboarding, setOnboarding] = useState(needsOnboarding);
   const session = useSession();
   const upd = useUpdate();
+  const openChat = () => {
+    setChatUi(readAgentUi(browserStore(), session?.user.userCode ?? '', assistantUiAvailable));
+    setChat(true);
+  };
+  useEffect(() => {
+    // A cached open view/thread belongs to its account, just like its local preference.
+    setChat(false);
+    setChatThread(null);
+    setChatUi('current');
+  }, [session?.user.userCode]);
   useSyncTick(); // 顶栏那个圈也要跟着进度动
 
   /**
@@ -108,7 +121,7 @@ export const App = () => {
         <QuickNotePage
           onOpenChat={(id) => {
             setChatThread(id);
-            setChat(true);
+            openChat();
           }}
         />
       )}
@@ -119,7 +132,7 @@ export const App = () => {
         <BoardPage
           onOpenChat={(id) => {
             setChatThread(id);
-            setChat(true);
+            openChat();
           }}
         />
       )}
@@ -172,7 +185,7 @@ export const App = () => {
         className="app-side-item"
         onClick={() => {
           setChatThread(null);
-          setChat(true);
+          openChat();
         }}
       >
         <span style={{ color: T.blue, display: 'inline-flex' }}>
@@ -308,7 +321,7 @@ export const App = () => {
                   className="ai-key"
                   onClick={() => {
                     setChatThread(null); // 中间那个键永远是**新对话**，历史要主动去翻
-                    setChat(true);
+                    openChat();
                   }}
                   aria-label={tr('打开 AI')}
                 >
@@ -339,7 +352,7 @@ export const App = () => {
         })}
       </nav>
 
-      {chat && <ChatSheet initialThreadId={chatThread} onClose={() => setChat(false)} />}
+      {chat && <ChatSheet key={session.user.userCode} initialThreadId={chatThread} ui={chatUi} onClose={() => setChat(false)} />}
     </div>
   );
 };

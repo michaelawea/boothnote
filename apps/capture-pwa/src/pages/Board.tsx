@@ -1466,11 +1466,12 @@ const Detail = ({
       </div>
     );
 
-  if (['confirmed', 'confirming', 'committing'].includes(row.status)) {
+  if (row.proposal_items?.length || ['confirmed', 'confirming', 'committing'].includes(row.status)) {
     return (
       <>
         <ReviewCard
           stagingId={row.id}
+          proposalItems={row.proposal_items}
           extracted={row.extracted ?? {}}
           confidence={row.confidence ?? undefined}
           suggestedCompany={row.suggested_company}

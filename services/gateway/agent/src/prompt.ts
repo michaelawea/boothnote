@@ -1,5 +1,14 @@
 import { playbookBlock, playbookIndex } from './skills.ts';
 import type { SkillContext } from './tools/context.ts';
+import { env } from './host.ts';
+
+/** A disabled/unregistered tool must not be prescribed by pushed or pulled playbooks. */
+export const contextualPlaybook = (ctx: SkillContext, name: string): string => {
+  const block = playbookBlock(name);
+  return ctx.source === 'dingtalk' || !env.agentMultiItems
+    ? block.split('\n').filter((line) => !line.includes('propose_records')).join('\n')
+    : block;
+};
 
 /**
  * 系统提示词 —— **只有铁律，打法在手册里**（D72）。
@@ -37,7 +46,9 @@ export const systemPrompt = (ctx: SkillContext): string =>
     '   发音接近名单里某个名字的词，一律按名单里的**正确拼写**处理，并把纠正记进 corrections —— 不要静默改写。',
     '2. 续写的对话先 get_thread，否则「他们年产 12000 台」会变成一句孤零零的话。',
     '',
-    '3. 🔴🔴 **不管发生什么，这一轮必须至少调一次 `propose_fields`。**',
+    ctx.source === 'dingtalk' || !env.agentMultiItems
+      ? '3. 🔴🔴 **不管发生什么，这一轮必须至少调一次 `propose_fields`。**'
+      : '3. 🔴🔴 **这一轮必须至少调一次 `propose_fields` 或 `propose_records` 保存业务提案。**',
     '   **`companyCode` 是可选的** —— 客户是新的 · 对不上号 · 字段读不全 · 信息有矛盾 ·',
     '   你不确定该记成哪一类，**都不是不提交的理由**。',
     '   实测最坏的结果（2026-08-03，连着三条）：客户查不到，你一个字段都没交，',
@@ -45,7 +56,13 @@ export const systemPrompt = (ctx: SkillContext): string =>
     '   客户查不到时：`companyCode` 留空 → `flag_new_company` 提议 → **照常把其余字段全交上去**',
     '   （归属由人在核对卡上点一下就定，D28：录入时可空，入库前必填）。',
     '   **至少要有 `summary`（一句话说清这条讲的是什么）和 `details`（原文里的细节）。**',
-    '   顺序：认出客户 → **立刻 propose_fields 存一版** → 再补细节、查缺口 → 需要就再调一次覆盖。',
+    ctx.source === 'dingtalk' || !env.agentMultiItems
+      ? '   顺序：认出客户 → **立刻 propose_fields 存一版** → 再补细节、查缺口 → 需要就再调一次覆盖。'
+      : '   先判断有哪些独立事项，再保存一版。多个不同客户/不同故障/可独立闭环的事项，必须用 propose_records 分开；同SKU出现两种不同故障也不能合成一个工单。',
+    ...(ctx.source === 'dingtalk' || !env.agentMultiItems ? [] : [
+      '   propose_records 已经保存多事项后，不再用 propose_fields 将整包重新压成一项。',
+      '   thread 不是业务事项。先 get_proposal_items 看稳定 itemId/版本；只修明确指定事项并带 expectedRevision，其余事项不复制、不取代。',
+    ]),
     '   读不出来就留空：**猜错比留空糟得多**；但什么都不交，比猜错还糟。',
     '',
     '4. 🔴 **先判断这是哪种记录**（recordType）—— 这一步错了，人在 CRM 里就找不到它：',
@@ -54,8 +71,10 @@ export const systemPrompt = (ctx: SkillContext): string =>
     '   · `project` 项目：**已经定点**（「定了我们 / 已定点 / 新项目 / 立项 / 项目编号」命中任一）→ 读 project 手册',
     '   · `followup` 项目跟进：「更新 <项目编号>」+ 要做的事 → 读 project 手册',
     '   分不清就留空（按选型处理）。',
-    '   🔴🔴 **recordType 是 project 或 followup 时，这一轮必须再调一次 `propose_project`** ——',
-    '   `propose_fields` 装不下项目；先 get_projects 查新旧；细节全在 project 手册里。',
+    ctx.source === 'dingtalk' || !env.agentMultiItems
+      ? '   recordType 是 project 或 followup 时，这一轮必须再调一次 `propose_project`，保存项目和交付计划。'
+      : '   单项旧路径 recordType 是 project 或 followup 时，这一轮必须再调一次 `propose_project`；多事项路径将该项 project/workItems/docs 完整写在 propose_records 的 fields 中，不能遗失交付计划。',
+    '   先 get_projects 查新旧；细节全在 project 手册里。',
     '',
     ...(ctx.source === 'dingtalk'
       ? [
@@ -67,6 +86,10 @@ export const systemPrompt = (ctx: SkillContext): string =>
           '   一条速记最多造一个，造之前先想想能不能塞进 propose_fields。',
         ]),
     '6. ask_user **一轮最多问一个问题** —— 展会现场每多问一句，销售就少录一条。',
+    '   跟进先 get_company_records/get_projects 查目标；API失败或列表未读完不代表没有候选。',
+    '   已检索到可信推荐但原话未明确给编号：ask_user用 targetOptions 引用 candidateHandle，recommendedIndex 推荐，保留 create/clarify 出口。',
+    '   多事项提问写 itemId，让答案只影响那一项。不要只说「待人工关联」却不问目标，也不要让人重新检索完整客户库。',
+    '   原话明确指定编号/UUID，先检索验证客户/类型再用 targetCandidateHandle 预填，无需机械重复询问；已结束工单不静默重开。',
     '',
     '# 硬要求',
     '· **绝对不要输出任何自然人姓名。** 只写职位（如「采购负责人」）。这是合规要求，不是风格偏好。',
@@ -104,7 +127,7 @@ export const systemPrompt = (ctx: SkillContext): string =>
      * 空数组 / 没加载到时这里什么都不加。
      */
     ...ctx.pushPlaybooks.map((name) => {
-      const block = playbookBlock(name);
+      const block = contextualPlaybook(ctx, name);
       return block ? `\n${block}` : '';
     }),
   ]

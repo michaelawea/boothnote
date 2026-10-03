@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { sql } from './host.ts';
 import { env } from './host.ts';
-import { listCompanies, listSuppliers } from './host.ts';
+import { listCompanies, listSuppliers, listThreadItems, hasProposalItems, persistAgentQuestions } from './host.ts';
 import {
   markExtsUnsupported,
   prepareAttachments,
@@ -531,7 +531,10 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
    */
   let inheritedFrom: string | null = null;
   let inheritedRecordType: string | null = null;
-  if (row.thread_id) {
+  const threadItems = env.agentMultiItems && row.thread_id ? await listThreadItems(row.thread_id,row.user_id) : [];
+  const [answerMarker]=await sql<Array<{answer: {itemId?:string;revisionId?:string;stagingId?:string}|null}>>`
+    select extracted->'answerToQuestion' as answer from staging where id=${st.id}`;
+  if (row.thread_id && !threadItems.length && !answerMarker?.answer?.stagingId) {
     /**
      * D147：钉钉来源接管的是一版**已入库**的（`replaces`）时，起点只能是
      * 「比那一版更新的未入库版」或者「那一版入库时的值」—— 绝不能是**比它更旧**的、
@@ -652,6 +655,9 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
       prepared.text && `随手上传的附件（已经解析成文字）：\n${prepared.text}`,
       prepared.native > 0 &&
         `另有 ${prepared.native} 个附件（图片/文档）已随本条消息**原样附上** —— 直接看内容，不用调 read_attachment。`,
+      threadItems.length>0 && `本对话已有独立事项（不是整份最近提案）：\n${JSON.stringify(threadItems)}\n新增问题用propose_records创建新item；明确更正才传该itemId+expectedRevision；不猜最新/第一项。`,
+      answerMarker?.answer?.itemId && `这是回答问题后对明确事项的补充：itemId=${answerMarker.answer.itemId}；只修订该事项，兄弟项保持。`,
+      answerMarker?.answer?.stagingId && !answerMarker.answer.itemId && `这是回答问题后对明确来源提案的补充：stagingId=${answerMarker.answer.stagingId}；已复制该问题的来源字段，不继承对话中其他提案。`,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -693,6 +699,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
             '读不出的留空，客户对不上号就留空 companyCode。什么都不交是最坏的结果。'
           );
         }
+        if (threadItems.length && !await hasProposalItems(st.id)) return '已有独立事项，请用propose_records提交新增或明确itemId+expectedRevision的修订，不使用单记录覆盖整条对话。';
         const [cur] = await sql<Array<{ extracted: any }>>`
           select extracted from staging where id = ${st.id}`;
         const ex = cur?.extracted ?? {};
@@ -912,7 +919,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
    * 拿它取代上一轮好好的一张卡，等于人按了一下停止就把前一轮的成果按没了。
    * 真交过字段（`ctx.proposed`）的那种照常取代 —— 那是货真价实的新一版。
    */
-  if (inheritedFrom && (ctx.proposed || (fallback && !aborted))) {
+  if (inheritedFrom && !await hasProposalItems(st.id) && (ctx.proposed || (fallback && !aborted))) {
     await sql`
       update staging set status = 'superseded', superseded_by = ${st.id}
       where id = ${inheritedFrom} and status in ('ready','failed')`;
@@ -949,10 +956,12 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
        * 数据是在的，只是**不在前端找的那个位置** —— 这类 bug 不报错，
        * 只是少了一块 UI，最难发现。
        */
-      await sql`
-        insert into thread_message (thread_id, role, text, inbox_id, meta)
-        values (${row.thread_id}, 'agent', ${say}, ${inboxId},
-                ${sql.json({ questions: ctx.questions, stagingId: st.id, partial } as never)})`;
+      await sql.begin(async(tx)=>{
+        const [message]=await tx<Array<{id:string}>>`insert into thread_message (thread_id,role,text,inbox_id,meta)
+          values(${row.thread_id},'agent',${say},${inboxId},${tx.json({questions:ctx.questions,stagingId:st.id,partial} as never)}) returning id`;
+        // GET hydrates these stable question IDs from their durable snapshots; no second reply or message UPDATE.
+        await persistAgentQuestions(ctx,message!.id,tx);
+      });
       await sql`update thread set last_message_at = now() where id = ${row.thread_id}`;
     }
   }

@@ -1,4 +1,5 @@
 import type { Company } from '../host.ts';
+import type { QuestionSnapshot, TargetCandidate } from '../../../../../shared/agent-questions.mjs';
 
 /**
  * 一轮 agent 跑动的上下文。
@@ -47,7 +48,13 @@ export type SkillContext = {
   /** 护栏②的计数器：一条速记最多造 1 个情报字段。 */
   intelFieldsCreated: number;
   /** agent 想问人的话，落在这里，由 loop 写进对话。 */
-  questions: Array<{ question: string; options?: string[] }>;
+  questions: QuestionSnapshot[];
+  /** Read tools register trusted handles; target tools can never manufacture arbitrary CRM UUIDs. */
+  targetCandidates?: Map<string, TargetCandidate>;
+  /** Optional identity supplied by multi-item orchestration, never inferred from thread identity. */
+  itemId?: string;
+  revisionId?: string;
+  proposedItems?: Array<{ itemId: string; revisionId: string; revision?: number; companyId: string | null }>;
   /** 它提议过的新客户名，只提议不建（§4.2 第3条）。 */
   suggestedCompany: string | null;
   /** 已经调用过 propose_fields 没有 —— 用来判断这一轮到底有没有产出。 */
@@ -62,4 +69,5 @@ export const newContext = (
   questions: [],
   suggestedCompany: null,
   proposed: false,
+  targetCandidates: new Map(),
 });

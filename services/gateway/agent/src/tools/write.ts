@@ -1,6 +1,7 @@
 import { Type } from '@earendil-works/pi-ai';
 
-import { sql, companySuggestion } from '../host.ts';
+import { sql, companySuggestion, createAgentQuestion, bindExplicitCandidate, hasProposalItems } from '../host.ts';
+import type { AgentQuestionInput } from '../host.ts';
 import { findSimilar } from '../host.ts';
 import {
   chainRank,
@@ -34,6 +35,7 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
       companyCode: Type.Optional(
         Type.String({ description: '客户代号，必须来自 search_companies 的返回值' }),
       ),
+      targetCandidateHandle: Type.Optional(Type.String({ description: '原话明确给了目标编号/UUID时，使用本轮 get_company_records/get_projects 返回的候选句柄预填。未明确给编号先用 ask_user 推荐确认。' })),
       /**
        * 🔴 这条速记该落成哪种记录。**没有这个字段之前，
        * 「帮我记录一下这个售后问题」会被抽成一条产品选型情报**（实测踩过）——
@@ -232,6 +234,9 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
       ),
     }),
     execute: async (p: Record<string, any>) => {
+      if (await hasProposalItems(ctx.stagingId)) {
+        return { text: '本轮已经保存独立事项，不能再压成一份字段；用逐项提案工具修订明确 itemId/版本，其余事项不变。' };
+      }
       // 服务端白名单再校验一次。**不指望 agent 自觉** —— 这一层在 ai.ts 时代就有，保留。
       const codes = new Set(ctx.companies.map((c) => c.code));
       const recordType = keepRecordTypeV2(p.recordType);
@@ -314,6 +319,10 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
         where id = ${ctx.stagingId}`;
       ctx.proposed = true;
 
+      if (p.targetCandidateHandle) {
+        try { await bindExplicitCandidate(ctx, String(p.targetCandidateHandle)); }
+        catch (error) { return { text: `字段已保存；目标尚未绑定：${(error as Error).message}。`, details: { fields, dropped } }; }
+      }
       return {
         text:
           (dropped.length
@@ -338,12 +347,19 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
       options: Type.Optional(
         Type.Array(Type.String(), { description: '给几个可点的选项，省得他打字' }),
       ),
+      targetOptions: Type.Optional(Type.Array(Type.Object({
+        label: Type.String({ description: '清楚的选项文字，包含候选编号/标题和区别' }),
+        candidateHandle: Type.Optional(Type.String({ description: '来自本轮读工具的 candidateHandle；不要传自行编造的UUID' })),
+        action: Type.Optional(Type.String({ description: '目标按类型用 append/update/continue；没有目标的出口只能 create（新问题）或 clarify（都不是/补充说明）' })),
+      }), { description: '需要关联已有售后/项目/任务/待确认草稿时，传结构化选项；服务端绑定目标而非让下一轮模型猜UUID。' })),
+      recommendedIndex: Type.Optional(Type.Integer({ minimum: 0, description: '推荐选项在 targetOptions 中的索引，从0开始。理由必须来自实际检索。' })),
+      itemId: Type.Optional(Type.String({ description: '多事项时必须指定这道问题所属的稳定 itemId，来自 propose_records 的返回值。' })),
     }),
-    execute: async ({ question, options }: { question: string; options?: string[] }) => {
+    execute: async (input: AgentQuestionInput) => {
       if (ctx.questions.length >= 1) {
         return { text: '这一轮已经问过一个问题了，先把手上的信息记下来吧。' };
       }
-      ctx.questions.push({ question, options });
+      createAgentQuestion(ctx, input);
       /**
        * D73②：字段已经交过一版的话，问出问题就**收工**（terminate）——
        * 剩下的就是等人，再跑几轮也只是空转烧钱。loop 会把这一轮如实记成

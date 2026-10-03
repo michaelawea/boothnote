@@ -10,6 +10,10 @@ import {
   pendingProjectProposals,
   reserveProjectCode,
   searchProjects,
+  readCompanyTargetCandidates,
+  readProjectTargetCandidates,
+  candidateText,
+  registerCandidates,
 } from '../host.ts';
 import {
   DOC_SOURCES,
@@ -77,6 +81,9 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
     execute: async ({ code, query }: { code?: string; query?: string }) => {
       let projects: Awaited<ReturnType<typeof listProjects>> = [];
       let scope = '';
+      let projectReadFailed = false;
+      let pendingReadFailed = false;
+      const candidateLines: string[] = [];
       /**
        * 🔴 **还没入库的提案也要交出去**（D91 · issue #18）。
        * CRM 里查不到不等于不存在 —— 同一个项目的上一条对话可能还在等人确认，
@@ -85,7 +92,7 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
        * **别家客户**的项目编号来用。
        */
       const pending = code
-        ? await pendingProjectProposals(code, ctx.stagingId).catch(() => [])
+        ? await pendingProjectProposals(code, ctx.stagingId).catch(() => { pendingReadFailed = true; return []; })
         : [];
       const pendingLines = pending.length
         ? [
@@ -97,16 +104,20 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
                 (p.category ? ` —— 品类 ${p.category}` : '') +
                 '（**待确认，CRM 里还没有**）',
             ),
-            '🔴 说的是同一个项目就**传同一个编号**，别开新的 —— 同一家客户 + 同一个品类 = 同一个项目。',
+            '🔴 原话明确是同一个项目才复用编号；同客户、同品类不足以认定同一项目。自己的待确认候选可用 ask_user 的 continue 选项安全续写。',
           ]
         : [];
       if (code) {
         const company = await getCompanyByCode(code);
         if (!company) return { text: `没有代号为 ${code} 的客户。` };
-        projects = await listProjects(company.id).catch(() => []);
+        projects = await listProjects(company.id).catch(() => { projectReadFailed = true; return []; });
+        const candidates = await readCompanyTargetCandidates(company.id, code, ctx.userId, ctx.stagingId, query);
+        registerCandidates(ctx, [candidates.projects, candidates.pending]);
+        candidateLines.push(candidateText('可校验的项目关联候选：', candidates.projects), candidateText('自己尚未入库的事项候选：', candidates.pending));
+        if (candidates.projects.status !== 'ok') projectReadFailed = true;
         scope = `${code} 名下`;
       } else if (query) {
-        projects = await searchProjects(query).catch(() => []);
+        projects = await searchProjects(query).catch(() => { projectReadFailed = true; return []; });
         scope = `全库匹配「${query}」的`;
       } else {
         return {
@@ -120,13 +131,15 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
         return {
           text:
             [
-              `${scope}CRM 里没有项目。`,
+              projectReadFailed ? `${scope}检索失败或未读完，不能认定没有项目。` : `${scope}已读取范围中没有项目。`,
               ...pendingLines,
+              ...candidateLines,
+              ...(pendingReadFailed ? ['待确认提案检索失败，不能判断这是新项目。'] : []),
               pending.length
                 ? '和上面那些都对不上才是新项目 —— 编号留空，`propose_project` 会向网关要一个（D91）。'
-                : '**按新项目处理**：原话里给了编号就照抄，没给就留空，`propose_project` 会当场向网关要一个（D91）。',
+                : projectReadFailed || pendingReadFailed ? '先保留草稿并重试检索，不因故障自动新建。' : '若原话表示新建，编号留空；若表示跟进却没有可信候选，用 ask_user 澄清一次。',
             ].join('\n'),
-          details: { projects: 0, pending: pending.length, isNew: !pending.length },
+          details: { projects: 0, pending: pending.length, isNew: !pending.length && !projectReadFailed && !pendingReadFailed, projectReadFailed, pendingReadFailed },
         };
       }
       const lines: string[] = [];
@@ -146,10 +159,24 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
       for (const p of projects) {
         const owner = companyById.get(p.companyId ?? '') ?? '归属未知';
         lines.push(`· **${p.projectCode}** ${p.name} —— 阶段 ${p.projectStage || '未填'} · 客户：${owner}`);
-        const [items, docs] = await Promise.all([
-          listWorkItems(p.id).catch(() => []),
-          listProjectDocs(p.id).catch(() => []),
+        const [itemsRead, docsRead, itemCandidates] = await Promise.all([
+          listWorkItems(p.id).then((rows) => ({ ok: true, rows })).catch(() => ({ ok: false, rows: [] })),
+          listProjectDocs(p.id).then((rows) => ({ ok: true, rows })).catch(() => ({ ok: false, rows: [] })),
+          p.companyId ? readProjectTargetCandidates(p.companyId, p.id) : Promise.resolve({ status: 'error' as const, candidates: [] }),
         ]);
+        registerCandidates(ctx, [itemCandidates]);
+        if (p.companyId && ctx.companies.some((company) => company.id === p.companyId)) {
+          const handle = crypto.randomUUID();
+          const candidate = { handle, target: { type: 'project' as const, id: p.id, companyId: p.companyId, action: 'update' as const,
+            code: p.projectCode, status: p.projectStage }, label: `${p.projectCode} · ${p.name}`, description: '' };
+          registerCandidates(ctx, [{ status: 'ok', candidates: [candidate] }]);
+          lines.push(candidateText('项目候选：', { status: 'ok', candidates: [candidate] }));
+        }
+        const items = itemsRead.rows;
+        const docs = docsRead.rows;
+        if (!itemsRead.ok) lines.push('任务检索失败，不能据此断言没有任务。');
+        if (!docsRead.ok) lines.push('文档检索失败，不能据此断言没有文档。');
+        lines.push(candidateText('可关联的已有任务候选：', itemCandidates));
         for (const w of items) {
           lines.push(`    ↳ ${w.itemCode} ${w.name}（${w.threadType}·${w.itemStatus}）`);
         }
@@ -158,6 +185,9 @@ export const projectSkills = (ctx: SkillContext): Skill[] => [
         }
       }
       lines.push(...pendingLines);
+      lines.push(...candidateLines);
+      if (pendingReadFailed) lines.push('待确认提案检索失败，不能依据空列表判定新项目。');
+      lines.push('原话明确指定已校验编号时用 propose_fields(targetCandidateHandle) 预填；推荐目标仍不明确时用 ask_user(targetOptions, recommendedIndex) 给少量候选以及 create/clarify 出口。');
       return { text: lines.join('\n'), details: { projects: projects.length, pending: pending.length } };
     },
   },

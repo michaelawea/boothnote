@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Isolated real gateway/Postgres + deterministic FAKE Twenty test stack.
+
+No production services are contacted. This is contract/E2E testing, not Twenty
+product validation. A command receives safe local fixture environment variables.
+Example: python3 scripts/test-isolated-agent.py
+Custom: python3 scripts/test-isolated-agent.py -- node --test PATH
+Each run migrates a new database. --hold keeps the supervisor alive for manual
+fixture/browser checks until SIGINT/SIGTERM. Connection selectors contain only
+fixture placeholders and are written into the run's unique /tmp log directory.
+"""
+import argparse
+import json
+import os
+import signal
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+from pathlib import Path
+
+
+class StartupFailed(RuntimeError):
+    pass
+
+
+def free_port():
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        return listener.getsockname()[1]
+
+
+def until(call, seconds=45):
+    started = time.monotonic()
+    last = None
+    while time.monotonic() - started < seconds:
+        try:
+            return call()
+        except StartupFailed:
+            raise
+        except Exception as error:
+            last = error
+            time.sleep(0.25)
+    raise RuntimeError("Local fixture did not become ready: " + str(last))
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo", default=str(Path(__file__).resolve().parent.parent))
+    parser.add_argument("--state-file")
+    parser.add_argument("--hold", action="store_true")
+    parser.add_argument("command", nargs=argparse.REMAINDER)
+    args = parser.parse_args()
+    command = args.command[1:] if args.command[:1] == ["--"] else args.command
+    if not command and not args.hold:
+        command = ["node", "--test", "services/gateway/src/__tests__/agent-flows.e2e.test.ts"]
+    root = Path(args.repo)
+    if not (root / "services/gateway/src/index.ts").exists():
+        raise RuntimeError("Not an Boothnote Map gateway repository")
+    run_dir = Path(tempfile.mkdtemp(prefix="boothnote-fixture-stack-", dir="/tmp"))
+    state_file = Path(args.state_file) if args.state_file else run_dir / "state.json"
+    cid = "boothnote-fixture-" + str(os.getpid())
+    pg_port, gw_port, twenty_port = free_port(), free_port(), free_port()
+    env = os.environ.copy()
+    env.update({
+        "APP_DATABASE_URL": f"postgres://postgres:itest@127.0.0.1:{pg_port}/boothnote",
+        "GATEWAY_PORT": str(gw_port), "GATEWAY_URL": f"http://127.0.0.1:{gw_port}",
+        "SERVER_URL": f"http://127.0.0.1:{twenty_port}", "TWENTY_API_KEY": "local-fixture-only",
+        "GATEWAY_JWT_SECRET": "local-fixture-only", "OPENAI_API_KEY": "local-fixture-only",
+        "OPENAI_BASE_URL": "http://127.0.0.1:9/v1", "AGENT_ENABLED": "0",
+        "TRANSCRIBE_SELFTEST": "0", "GATEWAY_AUDIO_DIR": str(run_dir / "audio"),
+        "ADMIN_TOKEN": "local-fixture-only", "CHANNEL_DINGTALK_SECRET": "local-fixture-only",
+        "CHANNEL_LAB_SECRET": "local-fixture-only", "PORTAL_SECRET": "local-fixture-only",
+        "CHANNEL_AUTOCOMMIT_SECONDS": "0", "CONFIRM_DELAY_MS": "1000",
+        "DINGTALK_DEFAULT_WEBHOOK": "", "ALLOW_NONLOCAL_TESTS": "",
+        "CAPTURE_URL": f"http://127.0.0.1:{gw_port}", "FIXTURE_TWENTY_URL": f"http://127.0.0.1:{twenty_port}",
+    })
+    docker_env = env.copy()
+    for name in ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]:
+        docker_env.pop(name, None)
+    docker = ["docker", "--host=unix:///var/run/docker.sock"]
+    children = []
+    handles = []
+    created_container = False
+    def cleanup():
+        for child in reversed(children):
+            if child.poll() is None:
+                os.killpg(child.pid, signal.SIGTERM)
+        for child in reversed(children):
+            try:
+                child.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(child.pid, signal.SIGKILL)
+                child.wait(timeout=5)
+        if created_container:
+            subprocess.run(docker + ["rm", "-f", cid], env=docker_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for handle in handles:
+            handle.close()
+        shutil.rmtree(run_dir / "audio", ignore_errors=True)
+        state_file.unlink(missing_ok=True)
+    def interrupted(signum, _frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGINT, interrupted)
+    signal.signal(signal.SIGTERM, interrupted)
+    try:
+        subprocess.run(docker + ["info", "--format", "{{.ServerVersion}}"], env=docker_env, check=True, stdout=subprocess.DEVNULL)
+        subprocess.run(docker + ["run", "-d", "--name", cid, "-e", "POSTGRES_PASSWORD=itest", "-e", "POSTGRES_DB=boothnote",
+                               "-p", f"127.0.0.1:{pg_port}:5432", "postgres:16"], env=docker_env, check=True, stdout=subprocess.DEVNULL)
+        created_container = True
+        def pg_ready():
+            result = subprocess.run(docker + ["exec", cid, "pg_isready", "-q"], env=docker_env)
+            if result.returncode:
+                raise RuntimeError("Postgres starting")
+        until(pg_ready)
+        fixture_log = (run_dir / "twenty.log").open("w")
+        handles.append(fixture_log)
+        fixture = subprocess.Popen([sys.executable, str(root / "services/gateway/src/__tests__/fixtures/boothnote_fake_twenty.py"), "--port", str(twenty_port)], env=env,
+                                   stdout=fixture_log, stderr=subprocess.STDOUT, start_new_session=True)
+        children.append(fixture)
+        until(lambda: urllib.request.urlopen(env["SERVER_URL"] + "/healthz", timeout=1).close())
+        migration_log = (run_dir / "migration.log").open("w")
+        handles.append(migration_log)
+        subprocess.run(["node", "src/migrate.ts"], cwd=root / "services/gateway", env=env,
+                       stdout=migration_log, stderr=subprocess.STDOUT, check=True)
+        gateway_log = (run_dir / "gateway.log").open("w")
+        handles.append(gateway_log)
+        gateway = subprocess.Popen(["node", "src/index.ts"], cwd=root / "services/gateway", env=env,
+                                   stdout=gateway_log, stderr=subprocess.STDOUT, start_new_session=True)
+        children.append(gateway)
+        def gateway_ready():
+            if gateway.poll() is not None:
+                raise StartupFailed("Gateway exited; inspect " + str(run_dir / "gateway.log"))
+            urllib.request.urlopen(env["GATEWAY_URL"] + "/health", timeout=1).close()
+        until(gateway_ready)
+        selectors = {name: env[name] for name in ["APP_DATABASE_URL", "GATEWAY_URL", "GATEWAY_PORT", "SERVER_URL", "FIXTURE_TWENTY_URL",
+                                                "TWENTY_API_KEY", "GATEWAY_JWT_SECRET", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GATEWAY_AUDIO_DIR",
+                                                "AGENT_ENABLED", "ADMIN_TOKEN", "PORTAL_SECRET", "CONFIRM_DELAY_MS"]}
+        state_file.write_text(json.dumps({"fixture": True, "realTwenty": False, "container": cid,
+                                                   "logs": str(run_dir), "env": selectors}, indent=2))
+        print(json.dumps({"ready": True, "fixture": True, "realTwenty": False, "stateFile": str(state_file),
+                          "logs": str(run_dir), "gateway": env["GATEWAY_URL"], "twenty": env["SERVER_URL"]}), flush=True)
+        if command:
+            test = subprocess.Popen(command, cwd=root, env=env, start_new_session=True)
+            children.append(test)
+            return test.wait()
+        while gateway.poll() is None and fixture.poll() is None:
+            time.sleep(0.5)
+        raise RuntimeError("Isolated service exited unexpectedly")
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        cleanup()
+        print(json.dumps({"cleanedUp": True, "container": cid, "logsRetained": str(run_dir)}), flush=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

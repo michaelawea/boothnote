@@ -16,7 +16,7 @@
 | 框架 | [`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi) **0.83.0 锁死版本**（MIT · TypeScript） |
 | 模型 | 抽取/视觉 `gpt-5.6-luna` · 转写 `gpt-transcribe`（都在 `.env`，不写死） |
 | 上限 | **8 次工具调用 / 120 秒**（带附件 +6 步 +60 秒），超了写 `partial` 而不是失败 |
-| 工具 | **恰好 15 个**（快照测试守着，连数量一起断言）|
+| 工具 | **恰好 17 个**（PWA；钉钉暂不注册多事项及即时情报写入工具，快照测试守着）|
 | 附件 | **原生喂给模型**（D71）：图片 `input_image` · pdf/docx/pptx/xlsx `input_file`；超 10MB / 探测不支持才走本地解析 |
 | 打法手册 | `agent/skills/` 四本标准 SKILL.md（D72），渐进披露；**改 playbook 不发版** |
 | 多轮 | 同一条对话的消息史落 `agent-sessions/<threadId>.jsonl`，续写时恢复（D73）|
@@ -63,7 +63,7 @@ agent/skills/             ← D72：标准 SKILL.md 技能库（**数据文件�
 **为什么 Pi 只出现在 `runtime.ts` 里**：规划文档 §2 记了一条实测风险 —— Pi 迭代极快
 （82k 星、版本号已到 0.83，而且搜到过 `pi-agent-core@0.67.4` 依赖一个没发出来的
 `pi-ai@^0.67.4`、装不上的真实 issue）。所以 `package.json` 锁死精确版本，
-而且要换框架时只改一个文件，十五个工具一行不动。
+而且要换框架时只改一个文件，工具实现一行不动。
 
 ---
 
@@ -80,6 +80,7 @@ prompt 会被绕过、会被长文本冲掉、会被模型换代改变行为；�
 | `read_skill` | 按名取一本 playbook 全文（D72） | 渐进披露：索引每轮只占几行，全文只在任务匹配时才进上下文。**参数是名字不是路径** —— 路径类工具违反「工具清单=能力边界」 |
 | `search_companies` | 去变音符的模糊匹配 | 56 家现在塞得下，并进 Lena 那 61 家就 100+，塞 prompt 迟早超，而且每次调用都在烧 token |
 | `get_thread` | 这条对话之前说过什么 | 续写时必须先读，否则「他们年产 12000 台」会被当成一句孤零零的话 |
+| `get_proposal_items` | 本人本对话的独立事项及当前版本 | 明确修订哪一项，避免把新事项当作整段改口 |
 | `get_company_gaps` | 这家还缺哪些情报 | 需求1「情报清单」在采集端的落点 —— 也是这系统区别于一个录音笔的地方 |
 | `get_company_records` | 这家在 CRM 里已有的项目（含当前阶段）· 在位品牌 · 没关掉的售后 | 「阶段往前推一格」的前提是知道现在在哪一格。没有它，模型只能从这一句话里读出一个绝对值，人在核对卡上看到的是一个凭空的阶段 |
 | `read_attachment` | 取附件已经抽好的文本 | 长附件不必每轮都进上下文 |
@@ -94,6 +95,7 @@ prompt 会被绕过、会被长文本冲掉、会被模型换代改变行为；�
 | 工具 | 落到哪 |
 |---|---|
 | `propose_fields` | `staging.extracted`，**服务端再白名单校验一次**（不指望它自觉）。含 `details`（长 markdown，D55）和 `chain`（结构化渠道链，D54） |
+| `propose_records` | 多事项独立身份和不可变修订；明确事项及版本才能修订，逐项确认后才写 CRM（#64） |
 | `ask_user` | 对话里回一句问话。**一轮最多一个** —— 展会现场每多问一句，销售就少录一条 |
 | `flag_new_company` | `staging.suggested_company`。**只提议，绝不建** |
 | `propose_intel_field` | 新的 `IntelItem` + 一条 `IntelValue`（见 §4） |
@@ -109,7 +111,7 @@ create_company · write_twenty · confirm_to_crm · update_inbox · delete_anyth
 
 这不是「禁止调用」列表，是 `agent.state.tools` 里没有。
 **执行机制只有一个**：`src/__tests__/agent.test.ts` 里那个快照测试，断言注册的工具名集合
-**恰好**等于清单上那十五个（数量也写死了）。谁手滑加了个 `create_company`，那个测试立刻红。
+**恰好**等于清单上的十七个（数量也写死了）。谁手滑加了个 `create_company`，那个测试立刻红。
 
 > 这一条让「模型出错」的最坏后果，从「脏数据进了 CRM」降到「一条提案被人否掉」。
 

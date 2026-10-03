@@ -10,6 +10,8 @@ import { t, type Locale } from '../i18n';
 import { setLocale } from '../api';
 import { BUILD_ID } from '../config';
 import { applyUpdate, checkForUpdate, useUpdate } from '../update';
+import { assistantUiAvailable, useAgentUi, writeAgentUi, type AgentUi } from '../agent-ui-preference';
+import { browserStore } from '../draft';
 
 /**
  * 语言名**用它自己那种语言写**，所以不过 `t()`：
@@ -39,6 +41,8 @@ export const MePage = () => {
   const session = useSession();
   const me = session?.user;
   const upd = useUpdate();
+  const agentUi = useAgentUi(me?.userCode ?? '');
+  const [uiErr, setUiErr] = useState('');
 
   // 老服务端不返回 locale，缺省即中文 —— 和 i18n.ts 里那条判断保持一致
   const curLocale: Locale = me?.locale === 'en' ? 'en' : 'zh';
@@ -180,6 +184,23 @@ export const MePage = () => {
           {langErr || t('语言跟账号走 —— 换手机、换浏览器、清缓存都还在。')}
         </div>
       </div>
+
+      {assistantUiAvailable && <>
+        <div style={{ fontSize: 12, fontWeight: 600, color: T.textSoft, margin: '18px 0 8px' }}>{t('Agent 界面')}</div>
+        <div style={{ ...card }}>
+          <div style={{ display: 'flex', gap: 8 }}>
+            {(['current', 'development'] as AgentUi[]).map((next) => <button key={next}
+              className="btn ghost sm" aria-pressed={agentUi === next} disabled={!me}
+              style={{ flex: 1, color: agentUi === next ? '#fff' : T.text, background: agentUi === next ? T.text : T.bg }}
+              onClick={() => { setUiErr(writeAgentUi(browserStore(), me!.userCode, next) ? '' : t('无法保存界面设置')); }}>
+              {next === 'current' ? t('现行版') : t('开发测试版')}
+            </button>)}
+          </div>
+          <div style={{ fontSize: 11, color: uiErr ? T.red : T.textLight, marginTop: 8, lineHeight: 1.6 }}>
+            {uiErr || t('仅本账号和本设备，下次打开对话生效。开发测试版仍使用正式业务数据。')}
+          </div>
+        </div>
+      </>}
 
       {/* ── 版本（D83）─────────────────────────────────────────────
           iOS 把网页存到桌面之后多半只「恢复」不「重新加载」，

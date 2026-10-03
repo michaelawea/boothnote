@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
+import { liveQuery } from 'dexie';
 
 import { T, fmtAgo, fmtDuration } from '../theme';
 import {
@@ -16,11 +17,11 @@ import {
   type SupersedePreview,
   type ThreadMessage,
 } from '../api';
-import { db, type LocalAttachment, type Thread } from '../db';
+import { db, type LocalAttachment, type Thread, type Note } from '../db';
 import { ACCEPT, addFiles, humanSize, kindLabel } from '../attach';
 import { readForUpload } from '../image';
 import { remoteFileUrl } from '../components/Attachments';
-import { flush, uploadProgress } from '../sync';
+import { enqueueQuestionAnswer, flush, onSyncChange, uploadProgress } from '../sync';
 import { useSyncTick } from '../useSync';
 import { ProgressRing } from '../components/ProgressRing';
 import { useSession } from '../auth';
@@ -42,12 +43,20 @@ import {
   IconTrash,
 } from '../icons';
 import { ReviewCard } from '../components/ReviewCard';
+import { QuestionCard } from '../components/QuestionCard';
 import { WorkLog, agentIsRunning } from '../components/WorkLog';
 import { Backdrop } from '../components/Backdrop';
 import { Sheet } from '../components/Sheet';
 import { useCompanies } from '../companies';
 import { t as tr } from '../i18n';
 import { spliceAt } from '../compose';
+import { assistantUiAvailable, type AgentUi } from '../agent-ui-preference';
+import { chatDraftKey, deleteChatDraft, loadChatDraft, saveChatDraft } from '../chat-drafts';
+import { projectMessages, type ChatEntry } from '../message-projection';
+import { ChatViewBoundary } from '../components/ChatViewBoundary';
+
+const AssistantThreadView = lazy(() => import('../components/AssistantThreadView'));
+
 
 /**
  * AI 全屏对话。
@@ -244,16 +253,20 @@ const LONG_PRESS_SLOP = 10;
 export const ChatSheet = ({
   onClose,
   initialThreadId,
+  ui = 'current',
 }: {
   onClose: () => void;
   /** 从速记页「发给 AI」进来时，直接落在那条对话上。 */
   initialThreadId?: string | null;
+  /** Captured at opening; a settings change never unmounts a live conversation. */
+  ui?: AgentUi;
 }) => {
   const session = useSession();
   const me = session?.user;
 
   const [threadId, setThreadId] = useState<string | null>(initialThreadId ?? null);
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
+  const [messagesScope, setMessagesScope] = useState('');
   /**
    * 🔴 乐观气泡**单独放**，不混进 messages。
    *
@@ -262,7 +275,20 @@ export const ChatSheet = ({
    * （维护者 2026-08-03 实测：上传没有任何进度显示）。
    * 服务端出现同一条（inbox_id 对上）之后再撤掉本地这份。
    */
-  const [pending, setPending] = useState<Array<ThreadMessage & { noteId: string }>>([]);
+  const [outboxNotes, setOutboxNotes] = useState<Note[]>([]);
+  const [view, setView] = useState<AgentUi>(assistantUiAvailable ? ui : 'current');
+  const [sending, setSending] = useState(false);
+  const sendingRef = useRef(false);
+  const previewRef = useRef(false);
+  const previewSerial = useRef(0);
+  const waitingForClient = useRef<string | null>(null);
+  const stoppingRef = useRef(false);
+  const activeScope = useRef(initialThreadId ?? 'new');
+  const conversationId = useRef<string>(crypto.randomUUID());
+  const dispatch = useRef<((text: string) => void) | null>(null);
+  const onRuntimeReady = useCallback((next: ((text: string) => void) | null) => { dispatch.current = next; }, []);
+  const [draftReady, setDraftReady] = useState<string | null>(null);
+  const [dictationTranscript, setDictationTranscript] = useState('');
   const [threads, setThreads] = useState<Thread[]>([]);
   /**
    * 客户名单，只为一件事：把 agent 认出来的那家**预先选上**。
@@ -320,11 +346,14 @@ export const ChatSheet = ({
    * `'asking'` = 正在问服务端；对象 = 问到了、等人点。
    */
   const [rewrite, setRewrite] = useState<'asking' | SupersedePreview | null>(null);
+  const [rewriteTarget, setRewriteTarget] = useState<{ id: string; body?: string } | null>(null);
   useSyncTick(); // 上传进度一变就重渲染
 
   const [text, setText] = useState('');
   const [atts, setAtts] = useState<LocalAttachment[]>([]);
   const [attErr, setAttErr] = useState('');
+  const [preparingAttachments, setPreparingAttachments] = useState(false);
+  const preparingAttachmentsRef = useRef(false);
   const [rec, setRec] = useState<RecordingHandle | null>(null);
   const [seconds, setSeconds] = useState(0);
 
@@ -391,6 +420,87 @@ export const ChatSheet = ({
   const composer = useRef<HTMLTextAreaElement | null>(null);
   const pendingKind = useRef<'photo' | 'image' | 'file'>('file');
   const bottom = useRef<HTMLDivElement | null>(null);
+  const mounted = useRef(true);
+  const recordingHandle = useRef<RecordingHandle | null>(null);
+  const recordingRequest = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; recordingHandle.current?.cancel(); };
+  }, []);
+
+  const scope = chatDraftKey(me?.userCode ?? '', threadId);
+  activeScope.current = scope;
+  useEffect(() => {
+    if (!me) return;
+    let alive = true;
+    setDraftReady(null);
+    void loadChatDraft(scope).then((draft) => {
+      if (!alive) return;
+      conversationId.current = draft?.conversationId ?? crypto.randomUUID();
+      setText(draft?.text ?? '');
+      setAtts(draft?.attachments ?? []);
+      setEditing(draft?.editing ?? null);
+      setDictationTranscript(draft?.transcript ?? '');
+      setDraftReady(scope);
+    }).catch(() => {
+      if (!alive) return;
+      setText(''); setAtts([]); setEditing(null); setDictationTranscript('');
+      setAttErr(tr('草稿暂时无法保存，请保持对话打开。'));
+      setDraftReady(scope);
+    });
+    return () => { alive = false; };
+  }, [scope, me?.userCode]);
+
+  useEffect(() => {
+    if (!me || draftReady !== scope) return;
+    void saveChatDraft({ key: scope, userCode: me.userCode, text, attachments: atts, editing,
+      conversationId: conversationId.current, transcript: dictationTranscript || undefined })
+      .catch(() => setAttErr(tr('草稿暂时无法保存，请保持对话打开。')));
+  }, [scope, draftReady, text, atts, editing, dictationTranscript, me?.userCode]);
+
+  // Observe durable receipts, including uploads performed by an already-running flush.
+  useEffect(() => {
+    if (!me || draftReady !== scope) return;
+    let alive = true;
+    setOutboxNotes([]);
+    const localConversation = conversationId.current;
+    const subscription = liveQuery(() => db.notes.where('recordedBy').equals(me.userCode)
+      .filter((n) => Boolean(n.toAgent) && (threadId ? n.threadId === threadId : n.clientThreadId === localConversation))
+      .toArray()).subscribe({ next: (notes) => {
+        if (!alive || activeScope.current !== scope) return;
+        setOutboxNotes(notes);
+        if (notes.some((n) => n.id === waitingForClient.current && n.sync === 'failed')) {
+          waitingForClient.current = null;
+          setWaiting(false);
+        }
+        if (!threadId) {
+          const assigned = notes.find((n) => n.clientThreadId === localConversation && n.threadId);
+          if (assigned?.threadId) {
+            void deleteChatDraft(scope);
+            setThreadId(assigned.threadId);
+          }
+        }
+      }, error: () => { if (alive) setAttErr(tr('无法读取待传消息，请保持对话打开。')); } });
+    let historyRefresh: number | undefined;
+    const unsub = onSyncChange(() => {
+      window.clearTimeout(historyRefresh);
+      historyRefresh = window.setTimeout(() => {
+        if (alive) void syncThreads().then((rows) => { if (alive) setThreads(rows); });
+      }, 300);
+    });
+    return () => { alive = false; subscription.unsubscribe(); unsub(); window.clearTimeout(historyRefresh); };
+  }, [scope, draftReady, threadId, me?.userCode]);
+
+  const entries = useMemo(() => projectMessages(messagesScope === scope ? messages : [], outboxNotes.filter((note) =>
+    note.recordedBy === me?.userCode && (threadId ? note.threadId === threadId : note.clientThreadId === conversationId.current))),
+    [messages, messagesScope, scope, outboxNotes, threadId, me?.userCode, draftReady]);
+  const businessCards = new Map<string, string>();
+  for (const entry of entries) {
+    const m = entry.message;
+    if (m.role !== 'agent' || !m.staging_id) continue;
+    // Preserve a live reply when a late stale reply follows it; otherwise use the latest.
+    if (!m.superseded_by || !businessCards.has(m.staging_id)) businessCards.set(m.staging_id, entry.key);
+  }
 
   // 每次点开默认是**新对话**（维护者 2026-08-03）——
   // 历史要主动去翻。默认续写会让人不小心把两家客户的话记在一起。
@@ -413,27 +523,37 @@ export const ChatSheet = ({
      * 清完到 `load()` 回来之间没有动画，那是对的：**不知道就别声称。**
      */
     setRunning(null);
+    setMessages([]);
     let alive = true;
+    let inFlight = false;
     const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const r = await fetchThread(threadId);
-        if (!alive) return;
+        if (!alive || activeScope.current !== scope) return;
         setMessages(r.messages);
+        setMessagesScope(scope);
         setRunning(r.running);
         // 🔴 打开的这条**已经被删了**（D102）—— 从看板那一行点进来才会遇到。
         //    静默显示全文的话，人会以为它还在历史里，下次去翻却找不到。
         setDeletedAt(r.deletedAt);
         // 服务端已经有这一条了（按 client_id 对应的 inbox_id 匹配），撤掉本地那份
-        setPending((ps) =>
-          ps.filter((p) => !p.inbox_id || !r.messages.some((m) => m.inbox_id === p.inbox_id)),
-        );
         // agent 回了、而且没有正在跑的一轮 —— 才算真的结束
-        if (r.messages.at(-1)?.role === 'agent' && !r.running) {
+        const expectedUser = waitingForClient.current;
+        const userIndex = expectedUser ? r.messages.findIndex((m) => m.role === 'user' && m.client_id === expectedUser) : -1;
+        const replied = userIndex >= 0 && r.messages.slice(userIndex + 1).some((m) =>
+          m.role === 'agent' && m.inbox_id === r.messages[userIndex].inbox_id);
+        if (r.messages.at(-1)?.role === 'agent' && !r.running && (!expectedUser || replied)) {
           setWaiting(false);
+          waitingForClient.current = null;
+          stoppingRef.current = false;
           setStopping(false); // 叫停的那一轮也是从这里落地的（D89）
         }
       } catch {
         /* 离线：保持现有内容，不要清空 */
+      } finally {
+        inFlight = false;
       }
     };
     void load();
@@ -444,11 +564,11 @@ export const ChatSheet = ({
       alive = false;
       window.clearInterval(t);
     };
-  }, [threadId]);
+  }, [threadId, scope]);
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages.length, live]);
+    if (view === 'current') bottom.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [entries.length, live, view]);
 
   /**
    * ── 输入框跟着内容长高、也跟着缩回去（D110 · 2026-08-11）────────────
@@ -483,8 +603,18 @@ export const ChatSheet = ({
   }, [rec]);
 
   const close = () => {
-    setClosing(true);
-    window.setTimeout(onClose, 190);
+    if (preparingAttachmentsRef.current) { setAttErr(tr('附件读取中，请稍候再关闭或切换对话。')); return; }
+    if (recordingRequest.current || rec || transcribing || failedAudio || pendingAudio) {
+      setAttErr(tr('请先结束录音或处理这段听写，再关闭或切换对话。'));
+      return;
+    }
+    if (sendingRef.current || previewRef.current || rewrite) return;
+    if (draftReady !== scope || !me) return;
+    void saveChatDraft({ key: scope, userCode: me.userCode, text, attachments: atts, editing,
+      conversationId: conversationId.current, transcript: dictationTranscript || undefined }).then(() => {
+      setClosing(true);
+      window.setTimeout(onClose, 190);
+    }).catch(() => setAttErr(tr('草稿暂时无法保存，请保持对话打开。')));
   };
 
   const closeHistory = () => {
@@ -497,9 +627,18 @@ export const ChatSheet = ({
 
   /** 选一条历史（`null` = 新对话）。选完把抽屉滑回去。 */
   const pickThread = (id: string | null) => {
+    if (preparingAttachmentsRef.current) { setAttErr(tr('附件读取中，请稍候再关闭或切换对话。')); return; }
+    if (recordingRequest.current || rec || transcribing || failedAudio || pendingAudio) {
+      setAttErr(tr('请先结束录音或处理这段听写，再关闭或切换对话。'));
+      return;
+    }
+    if (sendingRef.current || previewRef.current || rewrite) return;
+    setMessages([]); setOutboxNotes([]); setMenu(null); setHover(null);
     setThreadId(id);
     setWaiting(false);
     setStopping(false);
+    waitingForClient.current = null;
+    stoppingRef.current = false;
     closeHistory();
   };
 
@@ -554,13 +693,15 @@ export const ChatSheet = ({
    * 下一次轮询就会带回结果。静默的话人会以为按钮坏了。
    */
   const stop = async () => {
-    if (!threadId || stopping) return;
+    if (!threadId || stoppingRef.current) return;
+    stoppingRef.current = true;
     setStopping(true);
     try {
       const n = await abortThread(threadId);
       if (n === 0) setAttErr(tr('没赶上 —— 这一轮已经跑完了，结果马上就到。'));
     } catch (e) {
       setStopping(false);
+      stoppingRef.current = false;
       setAttErr((e as Error).message);
     }
   };
@@ -624,13 +765,17 @@ export const ChatSheet = ({
       navigator.clipboard?.writeText(m.text).catch(() => setAttErr(tr('这个浏览器不让复制')));
       return;
     }
+    if (entries.some((entry) => entry.message.inbox_id === m.inbox_id && (entry.message.proposal_items?.length ?? 0) > 1)) {
+      setAttErr(tr('这条消息包含多个事项，请用后续消息说明要修改哪一项。'));
+      return;
+    }
     if (a === 'edit') {
       setEditing({ id: m.id, text: m.text });
       setText(m.text);
       requestAnimationFrame(() => composer.current?.focus());
       return;
     }
-    void send({}, m.text, m.id);
+    void requestSend(m.text, m.id);
   };
 
   const send = async (
@@ -657,7 +802,7 @@ export const ChatSheet = ({
      */
     supersedes?: string,
   ) => {
-    if (!me) return;
+    if (!me || sendingRef.current || preparingAttachmentsRef.current || draftReady !== scope) return;
     const body = (overrideText ?? text).trim();
     /**
      * 停止录音之后攒在这里的那段（issue #15）—— 现在只剩**转录**有用（D111）。
@@ -668,9 +813,14 @@ export const ChatSheet = ({
      * 想留住那一段的话，下面那条提示上有「存到速记」——
      * 走的是速记那条路（`keepAsQuickNote`），音频照常安全落地。
      */
-    const said = pendingAudio?.transcript?.trim() || '';
+    const said = pendingAudio?.transcript?.trim() || dictationTranscript;
     // 没有正文、没有附件就没什么可发的 —— 音频不再是「可发的东西」
     if (!body && !atts.length) return;
+    sendingRef.current = true;
+    setSending(true);
+    const intentScope = scope;
+    const clientThreadId = conversationId.current;
+    try {
 
     /**
      * 🔴 **先把对话建出来，再发。**
@@ -684,8 +834,7 @@ export const ChatSheet = ({
      */
     let tid = threadId;
     if (!tid) {
-      tid = await createThread(body || tr('语音'));
-      if (tid) setThreadId(tid);
+      tid = await createThread(body || tr('语音'), clientThreadId);
     }
 
     const noteId = crypto.randomUUID();
@@ -698,6 +847,7 @@ export const ChatSheet = ({
       sync: 'queued',
       attempts: 0,
       threadId: tid ?? undefined,
+      clientThreadId,
       // 从 AI 这一屏发出去的才走 agent（D31：速记页不自动跑）
       toAgent: true,
       // D90：改口重发时带上被取代的那条消息 id（没有就是普通续写）
@@ -718,64 +868,28 @@ export const ChatSheet = ({
       ...extra,
     });
     setPendingAudio(null);
+    setDictationTranscript('');
 
-    // 乐观显示：网关还没回执之前，人先看到自己说的那句话（含附件和上传进度）
-    setPending((ps) => [
-      ...ps,
-      {
-        noteId,
-        id: `local-${noteId}`,
-        role: 'user',
-        text: body || tr('（附件）'),
-        inbox_id: null,
-        meta: {},
-        created_at: new Date().toISOString(),
-        superseded_by: null,
-        supersede_reason: null,
-        staging_id: null,
-        status: null,
-        extracted: null,
-        confidence: null,
-        partial: null,
-        suggested_company: null,
-        confirm_after: null,
-        twenty_refs: null,
-        agent_trace: null,
-        agent_steps: null,
-        run_stop_reason: null,
-        run_duration_ms: null,
-        staging_error: null,
-        confirmed_fields: null,
-        // 本地这份的附件用刚选中的那几个 —— 服务端那份回来之后会被替换
-        attachments: atts.map((a) => ({
-          id: '',
-          name: a.name,
-          kind: a.kind,
-          bytes: a.size,
-          parsed: null,
-          chars: 0,
-        })),
-      },
-    ]);
     setText('');
     setAtts([]);
     setAttErr('');
     setEditing(null); // 改口那一轮到此结束（D90）—— 下一句又是普通续写
+    waitingForClient.current = noteId;
     setWaiting(true);
 
+    if (tid && !threadId) {
+      await deleteChatDraft(intentScope);
+      setThreadId(tid);
+    }
+
     await flush();
-    // 上传完之后把服务端的 inbox id 补进那条乐观气泡 —— 轮询靠它判断「可以撤掉了」
-    const saved = await db.notes.get(noteId);
-    if (saved?.remoteId) {
-      setPending((ps) => ps.map((p) => (p.noteId === noteId ? { ...p, inbox_id: saved.remoteId! } : p)));
+    if (activeScope.current === intentScope) void syncThreads().then(setThreads);
+    } catch (error) {
+      if (activeScope.current === intentScope) setAttErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
     }
-    // 离线时 createThread 拿不到 id，退回旧路径：从回执回填的那条 note 上取
-    if (!tid) {
-      const mine = await db.notes.orderBy('createdAt').reverse().limit(3).toArray();
-      const withThread = mine.find((n) => n.threadId);
-      if (withThread?.threadId) setThreadId(withThread.threadId);
-    }
-    void syncThreads().then(setThreads);
   };
 
   /**
@@ -794,17 +908,34 @@ export const ChatSheet = ({
    * ⚠️ 问不到（离线 / 老服务端）时**照常发**，但不假装知道：
    *    这一句本身不该因为一次查询失败而发不出去（`inbox` 只增不改，话最要紧）。
    */
-  const trySend = async () => {
-    const editId = editing?.id;
-    if (!editId || !threadId) return void send({}, undefined, editId);
+  const requestSend = async (body?: string, editId?: string) => {
+    if (sendingRef.current || previewRef.current || rewrite || draftReady !== scope) return;
+    const source = entries.find((entry) => entry.message.id === editId)?.message;
+    if (source && entries.some((entry) => entry.message.inbox_id === source.inbox_id && (entry.message.proposal_items?.length ?? 0) > 1)) {
+      setAttErr(tr('这条消息包含多个事项，请用后续消息说明要修改哪一项。'));
+      return;
+    }
+    if (!editId || !threadId) {
+      if (!editId && view === 'development' && dispatch.current) return dispatch.current(body ?? text);
+      return void send({}, body, editId);
+    }
+    previewRef.current = true;
+    const serial = ++previewSerial.current;
     setRewrite('asking');
+    setRewriteTarget({ id: editId, body });
+    const editScope = scope;
     const p = await fetchSupersedePreview(threadId, editId);
+    if (previewSerial.current !== serial) return;
+    previewRef.current = false;
+    if (activeScope.current !== editScope) return;
     if (!p || !p.rewriting.length) {
       setRewrite(null);
-      return void send({}, undefined, editId);
+      setRewriteTarget(null);
+      return void send({}, body, editId);
     }
     setRewrite(p); // 等人点：卡片上逐条列出会被改写的记录
   };
+  const trySend = () => requestSend(undefined, editing?.id);
 
   /**
    * 把一段文字插到光标处（issue #15：「或者在选中的地方，继续补充转录」）。
@@ -841,6 +972,7 @@ export const ChatSheet = ({
       const said = (await transcribeAudio(blob, mime)).trim();
       setFailedAudio(null);
       setPendingAudio({ blob, mime, seconds: sec, transcript: said });
+      setDictationTranscript(said);
       // issue #21①：插在**光标处**，选中一段就替换那一段 —— 再录一次就是「接着补一句」
       if (said) insertAtCursor(said);
       else setAttErr(tr('这段录音没听出内容 —— 可以直接打字，或者删掉重录。'));
@@ -866,8 +998,26 @@ export const ChatSheet = ({
     const h = rec;
     if (!h) return;
     setRec(null);
+    recordingHandle.current = null;
     const { blob, mime, seconds: sec } = await h.stop();
     await transcribeInto(blob, mime, sec);
+  };
+  const beginRecording = async () => {
+    if (recordingRequest.current || rec || transcribing) return;
+    recordingRequest.current = true;
+    try {
+      const handle = await startRecording();
+      if (!mounted.current) return handle.cancel();
+      recordingHandle.current = handle;
+      handle.onInterrupt(({ blob, mime, seconds: sec }) => {
+        if (!mounted.current) return;
+        recordingHandle.current = null; setRec(null);
+        void transcribeInto(blob, mime, sec);
+      });
+      setSeconds(0); setRec(handle);
+    } catch (error) {
+      if (mounted.current) setAttErr(error instanceof Error ? error.message : String(error));
+    } finally { recordingRequest.current = false; }
   };
 
   /**
@@ -928,9 +1078,10 @@ export const ChatSheet = ({
    * 「这段录音没听出内容」，并给出「存到速记」那条出口（那边音频是资产）。
    * 转写没回来之前不让发：那会把还在半路的转录漏掉。
    */
-  const canSend = !transcribing && Boolean(text.trim() || atts.length);
+  const canSend = draftReady === scope && !sending && !preparingAttachments && !rewrite && !transcribing && !rec && Boolean(text.trim() || atts.length);
 
   const pick = (kind: 'photo' | 'image' | 'file') => {
+    if (preparingAttachmentsRef.current) return;
     pendingKind.current = kind;
     const el = fileInput.current;
     if (!el) return;
@@ -940,6 +1091,295 @@ export const ChatSheet = ({
     el.value = '';
     el.click();
   };
+
+  const renderMessage = (entry: ChatEntry): ReactNode => {
+    const m = entry.message;
+            /**
+             * 被改口取代的那些（D90 · issue #23）。
+             *
+             * 🔴 **照样显示。** 取代 ≠ 删除 —— 原话一个字没动，只是不再是活的那一条。
+             * 淡一档 + 一句人话，因为**「看不见」和「不存在」必须分得开**：
+             * 这个仓库最贵的 bug 全长那个样子（issue #14 的注释里写过同一句）。
+             */
+            const dead = Boolean(m.superseded_by);
+            /**
+             * 能不能对这条动手（改 / 重发）。三个条件缺一不可：
+             *   · 自己说的那句（agent 的回复没有「重发」的语义）
+             *   · 已经上传了（`local-` 开头的还在队列里，没有服务端 id 可取代 ——
+             *     那种情况直接在输入框里改就行）
+             *   · 不是已经被取代的历史
+             * ⚠️ 正在跑的那一轮**不禁用**：#22 和 #23 的组合场景就是
+             *    「停止 → 改一改 → 重发」，禁掉的话那条路就断在中间。
+             */
+            const editable = m.role === 'user' && !m.id.startsWith('local-') && !dead;
+            return (
+            <div data-chat-message={entry.key} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              {/**
+               * 🔴 工作日志是 agent 那条回复的**第一个子元素**（D88 · issue #24）。
+               *
+               * 原来它挂在整条消息**之后**（正文 → 选项 chips → 日志 → 核对卡）。
+               * 维护者 要的是 OpenAI 那个形态：「思考了 25s ›」在**回复的最抬头**，
+               * 想看再点开。放在末尾的话，人读完回复才看到「哦它刚才在想」——
+               * 顺序反了，那一行就从「过程」变成了「附录」。
+               *
+               * 轨迹一直都落在库里（D74），这里只是换了位置和长相。
+               */}
+              {m.role === 'agent' && (m.agent_trace?.length ?? 0) > 0 && (
+                <WorkLog
+                  trace={m.agent_trace!}
+                  stopReason={m.run_stop_reason}
+                  durationMs={m.run_duration_ms}
+                />
+              )}
+              {/**
+               * 气泡 + 它的动作（D90）。外面这层只做三件事：
+               *   ① 电脑端记录鼠标停在哪条上（那一排动作只对它显示）
+               *   ② 手机端接长按（阈值/容差在 `pressHandlers` 里）
+               *   ③ 被取代的那条淡一档
+               */}
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 4,
+                  alignItems: m.role === 'user' ? 'flex-end' : 'flex-start',
+                  opacity: dead ? 0.45 : 1,
+                  /**
+                   * 🔴 被托起来的那一刻，原位这条**藏起来**（D103 · issue #31）。
+                   * 不藏的话虚化背景里还有一份同样的气泡，浮层上那份就成了副本 ——
+                   * 而 issue 要的是「这条消息成为焦点」，不是「多出来一条」。
+                   * 用 `visibility` 不是 `display`：位置留着，退出时不会有一下跳动。
+                   */
+                  visibility: menu?.message.id === m.id ? 'hidden' : undefined,
+                }}
+                onMouseEnter={desktop && editable ? () => setHover(m.id) : undefined}
+                onMouseLeave={desktop && editable ? () => setHover(null) : undefined}
+                /**
+                 * 🔴 长按**不按 `desktop` 分叉**（2026-08-11 改）。
+                 *
+                 * 原来是 `!desktop && editable`，于是**触屏笔记本上长按整个没有** ——
+                 * 只要接着鼠标，`pointer: fine` 就是真，而人手边还有一块触摸屏。
+                 * 挂上去在纯鼠标设备上是零代价：touch 事件根本不会触发。
+                 * 悬停那一排仍然只给 `desktop`（鼠标才谈得上悬停）。
+                 */
+                {...(editable ? pressHandlers(m) : {})}
+              >
+                <div
+                  className="bubble"
+                  data-role={m.role}
+                  style={
+                    /**
+                     * 🔴 手机端把系统的取词/长按菜单关掉，否则长按会先被它接走
+                     * （issue #23 第 4 条）。**只关自己那侧的气泡、只在触屏上关** ——
+                     * 电脑上鼠标选中复制是天天在用的动作，关了纯属添乱。
+                     * 触屏上「复制」由我们自己那一排提供，没有丢功能。
+                     */
+                    !desktop && editable
+                      ? { userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }
+                      : undefined
+                  }
+                >
+                  {bold(m.text)}
+                </div>
+
+                {/* 电脑端：悬停那一排（issue #23：至少要有 复制 · 编辑 · 重新发送） */}
+                {desktop && editable && hover === m.id && (
+                  <div style={{ display: 'flex', gap: 10 }}>
+                    {MSG_ACTIONS.map((a) => (
+                      <button
+                        key={a}
+                        onClick={() => runAction(m, a)}
+                        style={{
+                          font: 'inherit',
+                          fontSize: 11.5,
+                          color: T.textLight,
+                          background: 'transparent',
+                          border: 'none',
+                          padding: 0,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {tr(MSG_ACTION_LABEL[a])}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* 被取代的那条要说一句 —— 否则人会以为那句话丢了 */}
+                {dead && (
+                  <div style={{ fontSize: 11.5, color: T.textLight }}>
+                    {m.supersede_reason === 'stale_reply'
+                      ? tr('这一轮针对的是上面那句已经改掉的话')
+                      : tr('这句已经改过了 —— 下面是新的那一版（原话没动）')}
+                  </div>
+                )}
+              </div>
+
+              {/* 🔴 附件必须看得见。传上去了、解析了，而对话里一点痕迹都没有 ——
+                  人只能凭记忆相信它上去了（维护者 2026-08-03 实测的第一条抱怨）。
+                  同时标出「已读」——那是 agent 真的把文件读开了的凭据。 */}
+              {(m.attachments ?? []).length > 0 && (
+                <div
+                  style={{
+                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 5,
+                    maxWidth: '84%',
+                  }}
+                >
+                  {m.attachments.map((a, i) => (
+                    <AttachmentChip key={a.id || i} att={a} />
+                  ))}
+                </div>
+              )}
+              {/* 自己那条还在传的时候给个圈 —— 传一张 8MB 展台照在展馆 4G 上要十几秒，
+                  这十几秒里没有反馈的话，人会以为没发出去然后再按一次 */}
+              {m.id.startsWith('local-') && (() => {
+                const p = uploadProgress(m.id.slice(6));
+                if (p === undefined) return null;
+                return (
+                  <div
+                    style={{
+                      alignSelf: 'flex-end',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                      fontSize: 11.5,
+                      color: T.textLight,
+                      marginTop: -6,
+                    }}
+                  >
+                    <ProgressRing value={p} size={13} />
+                    {p >= 0 ? tr('上传中 {a}%', { a: Math.round(p * 100) }) : tr('上传中')}
+                  </div>
+                );
+              })()}
+              {m.id.startsWith('local-') && entry.note?.lastError && <div role="alert" style={{ color: T.amber, fontSize: 12 }}>{entry.note.lastError}</div>}
+              {m.id.startsWith('local-') && entry.note?.sync === 'queued' && uploadProgress(entry.note.id) === undefined &&
+                <div role="status" style={{ color: T.textLight, fontSize: 12 }}>{tr('已保存在本机，等待同步。')}</div>}
+              {/**
+               * 🔴 **agent 想问的那一句，做成可点的选项。**
+               *
+               * issue #17 根因 E（2026-08-05）：`ask_user` 的 `options` 参数
+               * 从实现出来到今天**一次都没有到达过屏幕**。
+               * 网关把问题拼成一行纯文本接在回复后面（`loop.ts` 的 `say`），
+               * `options` 存进了 `meta.questions`，而这一屏从头到尾没读过它 ——
+               * 我在整个 PWA 里搜过，`questions` 只出现在 `api.ts` 的类型声明里。
+               *
+               * 人看到的只是一句夹在回复里的问句，只能自己打字回答。
+               * 而展会现场每多打一个字就少录一条 —— 这正是 `options` 当初存在的理由。
+               *
+               * ⚠️ 点一下 = 把选项文本当成下一条消息发出去（复用 `send()`），
+               * 于是它变成这条对话的续写，agent 下一轮 `get_thread` 就看得到。
+               * **不做成「直接改字段」** —— 那会绕过核对卡，而人按那一下之前
+               * 系统不该替他决定任何事。
+               */}
+              {m.role === 'agent' && (m.meta?.questions ?? []).map((q, qi) => {
+                const localAnswer = 'questionId' in q ? [...outboxNotes].reverse().find((n) =>
+                  n.questionAnswer?.questionId === q.questionId && n.questionAnswer.expectedRevision === q.expectedRevision) : undefined;
+                return (
+                <QuestionCard key={'questionId' in q ? q.questionId : `legacy:${qi}`} question={q} disabled={live || sending}
+                  localAnswerState={localAnswer?.sync} localAnswerError={localAnswer?.lastError}
+                  onLegacyAnswer={async (answer) => { await send({}, answer); }}
+                  onAnswer={async (answer) => {
+                    if (!threadId || sendingRef.current) return;
+                    sendingRef.current = true; setSending(true);
+                    try {
+                      const note = await enqueueQuestionAnswer({ threadId, ...answer });
+                      waitingForClient.current = note.id;
+                      setWaiting(true);
+                      void flush();
+                    } finally { sendingRef.current = false; setSending(false); }
+                  }} />
+              ); })}
+
+              {/* 工作日志（D74）挪到了这条消息的**最前面**（D88）—— 见上面那段注释。 */}
+
+              {/* agent 那条消息底下挂核对卡 —— 这就是它和聊天机器人的分界 */}
+              {/* 🔴 状态放宽到 confirming / confirmed ——
+                  只认 'ready' 的话，点完确认那一刻卡片会被整个卸载，
+                  「已入库 · N 秒内可撤销」和撤销按钮跟着一起消失（实测踩到）。 */}
+              {/**
+               * 被后一轮取代的那一版（issue #14）。卡片不再出现 ——
+               * 同一条对话只留最新一版可确认，否则三轮对话就是三张卡、
+               * 都点了就是 CRM 里三份拜访记录。
+               *
+               * 🔴 但**必须说一句**：`superseded` 只是「不再是活的那一条」，
+               * 内容一个字没动。不说的话人会以为那一轮说的话丢了 ——
+               * 「看不见」和「不存在」必须分得开。
+               */}
+              {m.role === 'agent' && m.status === 'superseded' && (
+                <div style={{ fontSize: 11.5, color: T.textLight, alignSelf: 'flex-start' }}>
+                  {tr('这一版已被后面那次修改取代（原话和抽取结果都还在）')}
+                </div>
+              )}
+              {m.role === 'agent' &&
+                m.staging_id &&
+                businessCards.get(m.staging_id) === entry.key &&
+                (Boolean(m.proposal_items?.length) || ['ready', 'confirming', 'committing', 'confirmed'].includes(m.status ?? '')) && (
+                  <ReviewCard
+                    key={m.staging_id}
+                    stagingId={m.staging_id}
+                    proposalItems={m.proposal_items}
+                    extracted={m.extracted ?? {}}
+                    confidence={m.confidence ?? undefined}
+                    suggestedCompany={m.suggested_company}
+                    partial={m.partial ?? undefined}
+                    status={m.status}
+                    confirmAfter={m.confirm_after}
+                    twentyRefs={m.twenty_refs}
+                    confirmedFields={m.confirmed_fields}
+                    stagingError={m.staging_error}
+                    initialCompany={
+                      companies.find(
+                        (c) => c.code === (m.extracted as Record<string, unknown> | null)?.companyCode,
+                      ) ?? null
+                    }
+                  />
+                )}
+            </div>
+            );
+
+  };
+
+  const emptyView = !entries.length && !live && (
+          <div style={{ textAlign: 'center', padding: '46px 20px', color: T.textLight }}>
+            <div style={{ fontSize: 17, color: T.text, fontWeight: 500, marginBottom: 8 }}>
+              {tr('说一句刚才发生的事')}
+            </div>
+            <div style={{ fontSize: 13.5, lineHeight: 1.8 }}>
+              {tr('「刚跟 Alpin 聊完，他们逆变器现在用 Voltaro，明年想换」')}
+              <br />
+              {tr('我来认客户、抽字段、找出这家还缺哪些情报。')}
+            </div>
+          </div>
+        );
+
+  const currentView = (<div style={{ flex: 1, overflowY: 'auto', padding: '16px 14px' }}>
+        <div style={{ maxWidth: 820, margin: '0 auto' }}>
+        {emptyView}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+          {entries.map((entry) => <Fragment key={entry.key}>{renderMessage(entry)}</Fragment>)}
+
+          {live && (
+            <WorkLog
+              live
+              trace={running?.trace ?? []}
+              stage={running?.stage}
+              steps={running?.steps}
+              maxSteps={running?.max_steps}
+              // 停止键（D89）。只有已经有 threadId 才给得出去 ——
+              // 第一条消息还在上传、对话都还没建出来时，没有能停的东西
+              onStop={threadId ? () => void stop() : undefined}
+              stopping={stopping}
+            />
+          )}
+          <div ref={bottom} />
+        </div>
+        </div>
+      </div>);
 
   return (
     <Sheet closing={closing}>
@@ -962,6 +1402,7 @@ export const ChatSheet = ({
           </button>
           <div style={{ flex: 1, textAlign: 'center', fontSize: 15, fontWeight: 600 }}>
             {threadId ? (threads.find((t) => t.id === threadId)?.title ?? tr('对话')) : tr('新对话')}
+            {view === 'development' && <span style={{ fontSize: 10, color: T.amber, marginLeft: 6 }}>{tr('开发测试版')}</span>}
           </div>
           {/* 右上角这个 ✕ 是回到底栏那几个键的唯一出口 —— 位置不能变 */}
           <button onClick={close} style={{ color: T.textSoft, padding: 10 }} aria-label={tr('关闭')}>
@@ -1137,273 +1578,12 @@ export const ChatSheet = ({
        *
        * 上限取 820 —— 比 ChatGPT 的 768 略宽一点，因为核对卡里有「标签 + 值」两列。
        */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 14px' }}>
-        <div style={{ maxWidth: 820, margin: '0 auto' }}>
-        {!messages.length && !live && (
-          <div style={{ textAlign: 'center', padding: '46px 20px', color: T.textLight }}>
-            <div style={{ fontSize: 17, color: T.text, fontWeight: 500, marginBottom: 8 }}>
-              {tr('说一句刚才发生的事')}
-            </div>
-            <div style={{ fontSize: 13.5, lineHeight: 1.8 }}>
-              {tr('「刚跟 Alpin 聊完，他们逆变器现在用 Voltaro，明年想换」')}
-              <br />
-              {tr('我来认客户、抽字段、找出这家还缺哪些情报。')}
-            </div>
-          </div>
-        )}
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-          {[...messages, ...pending].map((m) => {
-            /**
-             * 被改口取代的那些（D90 · issue #23）。
-             *
-             * 🔴 **照样显示。** 取代 ≠ 删除 —— 原话一个字没动，只是不再是活的那一条。
-             * 淡一档 + 一句人话，因为**「看不见」和「不存在」必须分得开**：
-             * 这个仓库最贵的 bug 全长那个样子（issue #14 的注释里写过同一句）。
-             */
-            const dead = Boolean(m.superseded_by);
-            /**
-             * 能不能对这条动手（改 / 重发）。三个条件缺一不可：
-             *   · 自己说的那句（agent 的回复没有「重发」的语义）
-             *   · 已经上传了（`local-` 开头的还在队列里，没有服务端 id 可取代 ——
-             *     那种情况直接在输入框里改就行）
-             *   · 不是已经被取代的历史
-             * ⚠️ 正在跑的那一轮**不禁用**：#22 和 #23 的组合场景就是
-             *    「停止 → 改一改 → 重发」，禁掉的话那条路就断在中间。
-             */
-            const editable = m.role === 'user' && !m.id.startsWith('local-') && !dead;
-            return (
-            <div key={m.id} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {/**
-               * 🔴 工作日志是 agent 那条回复的**第一个子元素**（D88 · issue #24）。
-               *
-               * 原来它挂在整条消息**之后**（正文 → 选项 chips → 日志 → 核对卡）。
-               * 维护者 要的是 OpenAI 那个形态：「思考了 25s ›」在**回复的最抬头**，
-               * 想看再点开。放在末尾的话，人读完回复才看到「哦它刚才在想」——
-               * 顺序反了，那一行就从「过程」变成了「附录」。
-               *
-               * 轨迹一直都落在库里（D74），这里只是换了位置和长相。
-               */}
-              {m.role === 'agent' && (m.agent_trace?.length ?? 0) > 0 && (
-                <WorkLog
-                  trace={m.agent_trace!}
-                  stopReason={m.run_stop_reason}
-                  durationMs={m.run_duration_ms}
-                />
-              )}
-              {/**
-               * 气泡 + 它的动作（D90）。外面这层只做三件事：
-               *   ① 电脑端记录鼠标停在哪条上（那一排动作只对它显示）
-               *   ② 手机端接长按（阈值/容差在 `pressHandlers` 里）
-               *   ③ 被取代的那条淡一档
-               */}
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 4,
-                  alignItems: m.role === 'user' ? 'flex-end' : 'flex-start',
-                  opacity: dead ? 0.45 : 1,
-                  /**
-                   * 🔴 被托起来的那一刻，原位这条**藏起来**（D103 · issue #31）。
-                   * 不藏的话虚化背景里还有一份同样的气泡，浮层上那份就成了副本 ——
-                   * 而 issue 要的是「这条消息成为焦点」，不是「多出来一条」。
-                   * 用 `visibility` 不是 `display`：位置留着，退出时不会有一下跳动。
-                   */
-                  visibility: menu?.message.id === m.id ? 'hidden' : undefined,
-                }}
-                onMouseEnter={desktop && editable ? () => setHover(m.id) : undefined}
-                onMouseLeave={desktop && editable ? () => setHover(null) : undefined}
-                /**
-                 * 🔴 长按**不按 `desktop` 分叉**（2026-08-11 改）。
-                 *
-                 * 原来是 `!desktop && editable`，于是**触屏笔记本上长按整个没有** ——
-                 * 只要接着鼠标，`pointer: fine` 就是真，而人手边还有一块触摸屏。
-                 * 挂上去在纯鼠标设备上是零代价：touch 事件根本不会触发。
-                 * 悬停那一排仍然只给 `desktop`（鼠标才谈得上悬停）。
-                 */
-                {...(editable ? pressHandlers(m) : {})}
-              >
-                <div
-                  className="bubble"
-                  data-role={m.role}
-                  style={
-                    /**
-                     * 🔴 手机端把系统的取词/长按菜单关掉，否则长按会先被它接走
-                     * （issue #23 第 4 条）。**只关自己那侧的气泡、只在触屏上关** ——
-                     * 电脑上鼠标选中复制是天天在用的动作，关了纯属添乱。
-                     * 触屏上「复制」由我们自己那一排提供，没有丢功能。
-                     */
-                    !desktop && editable
-                      ? { userSelect: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }
-                      : undefined
-                  }
-                >
-                  {bold(m.text)}
-                </div>
-
-                {/* 电脑端：悬停那一排（issue #23：至少要有 复制 · 编辑 · 重新发送） */}
-                {desktop && editable && hover === m.id && (
-                  <div style={{ display: 'flex', gap: 10 }}>
-                    {MSG_ACTIONS.map((a) => (
-                      <button
-                        key={a}
-                        onClick={() => runAction(m, a)}
-                        style={{
-                          font: 'inherit',
-                          fontSize: 11.5,
-                          color: T.textLight,
-                          background: 'transparent',
-                          border: 'none',
-                          padding: 0,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {tr(MSG_ACTION_LABEL[a])}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* 被取代的那条要说一句 —— 否则人会以为那句话丢了 */}
-                {dead && (
-                  <div style={{ fontSize: 11.5, color: T.textLight }}>
-                    {m.supersede_reason === 'stale_reply'
-                      ? tr('这一轮针对的是上面那句已经改掉的话')
-                      : tr('这句已经改过了 —— 下面是新的那一版（原话没动）')}
-                  </div>
-                )}
-              </div>
-
-              {/* 🔴 附件必须看得见。传上去了、解析了，而对话里一点痕迹都没有 ——
-                  人只能凭记忆相信它上去了（维护者 2026-08-03 实测的第一条抱怨）。
-                  同时标出「已读」——那是 agent 真的把文件读开了的凭据。 */}
-              {(m.attachments ?? []).length > 0 && (
-                <div
-                  style={{
-                    alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 5,
-                    maxWidth: '84%',
-                  }}
-                >
-                  {m.attachments.map((a, i) => (
-                    <AttachmentChip key={a.id || i} att={a} />
-                  ))}
-                </div>
-              )}
-              {/* 自己那条还在传的时候给个圈 —— 传一张 8MB 展台照在展馆 4G 上要十几秒，
-                  这十几秒里没有反馈的话，人会以为没发出去然后再按一次 */}
-              {m.id.startsWith('local-') && (() => {
-                const p = uploadProgress(m.id.slice(6));
-                if (p === undefined) return null;
-                return (
-                  <div
-                    style={{
-                      alignSelf: 'flex-end',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 6,
-                      fontSize: 11.5,
-                      color: T.textLight,
-                      marginTop: -6,
-                    }}
-                  >
-                    <ProgressRing value={p} size={13} />
-                    {p >= 0 ? tr('上传中 {a}%', { a: Math.round(p * 100) }) : tr('上传中')}
-                  </div>
-                );
-              })()}
-              {/**
-               * 🔴 **agent 想问的那一句，做成可点的选项。**
-               *
-               * issue #17 根因 E（2026-08-05）：`ask_user` 的 `options` 参数
-               * 从实现出来到今天**一次都没有到达过屏幕**。
-               * 网关把问题拼成一行纯文本接在回复后面（`loop.ts` 的 `say`），
-               * `options` 存进了 `meta.questions`，而这一屏从头到尾没读过它 ——
-               * 我在整个 PWA 里搜过，`questions` 只出现在 `api.ts` 的类型声明里。
-               *
-               * 人看到的只是一句夹在回复里的问句，只能自己打字回答。
-               * 而展会现场每多打一个字就少录一条 —— 这正是 `options` 当初存在的理由。
-               *
-               * ⚠️ 点一下 = 把选项文本当成下一条消息发出去（复用 `send()`），
-               * 于是它变成这条对话的续写，agent 下一轮 `get_thread` 就看得到。
-               * **不做成「直接改字段」** —— 那会绕过核对卡，而人按那一下之前
-               * 系统不该替他决定任何事。
-               */}
-              {m.role === 'agent' &&
-                (m.meta?.questions ?? []).map((q, qi) =>
-                  q.options?.length ? (
-                    <div
-                      key={`q${qi}`}
-                      style={{
-                        alignSelf: 'flex-start',
-                        display: 'flex',
-                        gap: 6,
-                        flexWrap: 'wrap',
-                        maxWidth: '84%',
-                      }}
-                    >
-                      {q.options.map((opt) => (
-                        <button
-                          key={opt}
-                          className="chip"
-                          disabled={live}
-                          onClick={() => void send({}, opt)}
-                        >
-                          {opt}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null,
-                )}
-
-              {/* 工作日志（D74）挪到了这条消息的**最前面**（D88）—— 见上面那段注释。 */}
-
-              {/* agent 那条消息底下挂核对卡 —— 这就是它和聊天机器人的分界 */}
-              {/* 🔴 状态放宽到 confirming / confirmed ——
-                  只认 'ready' 的话，点完确认那一刻卡片会被整个卸载，
-                  「已入库 · N 秒内可撤销」和撤销按钮跟着一起消失（实测踩到）。 */}
-              {/**
-               * 被后一轮取代的那一版（issue #14）。卡片不再出现 ——
-               * 同一条对话只留最新一版可确认，否则三轮对话就是三张卡、
-               * 都点了就是 CRM 里三份拜访记录。
-               *
-               * 🔴 但**必须说一句**：`superseded` 只是「不再是活的那一条」，
-               * 内容一个字没动。不说的话人会以为那一轮说的话丢了 ——
-               * 「看不见」和「不存在」必须分得开。
-               */}
-              {m.role === 'agent' && m.status === 'superseded' && (
-                <div style={{ fontSize: 11.5, color: T.textLight, alignSelf: 'flex-start' }}>
-                  {tr('这一版已被后面那次修改取代（原话和抽取结果都还在）')}
-                </div>
-              )}
-              {m.role === 'agent' &&
-                m.staging_id &&
-                ['ready', 'confirming', 'committing', 'confirmed'].includes(m.status ?? '') && (
-                  <ReviewCard
-                    key={m.staging_id}
-                    stagingId={m.staging_id}
-                    extracted={m.extracted ?? {}}
-                    confidence={m.confidence ?? undefined}
-                    suggestedCompany={m.suggested_company}
-                    partial={m.partial ?? undefined}
-                    status={m.status}
-                    confirmAfter={m.confirm_after}
-                    twentyRefs={m.twenty_refs}
-                    confirmedFields={m.confirmed_fields}
-                    stagingError={m.staging_error}
-                    initialCompany={
-                      companies.find(
-                        (c) => c.code === (m.extracted as Record<string, unknown> | null)?.companyCode,
-                      ) ?? null
-                    }
-                  />
-                )}
-            </div>
-            );
-          })}
+      {view === 'development' ? (
+        <ChatViewBoundary fallback={currentView} onFallback={() => setView('current')}>
+          <Suspense fallback={<div role="status" style={{ padding: 18 }}>{tr('正在加载开发测试版…')}</div>}>
+            <AssistantThreadView key={scope} entries={entries} running={live}
+              onSend={(body) => send({}, body)} onCancel={stop} renderMessage={renderMessage} onReady={onRuntimeReady}>
+              {emptyView}
           {live && (
             <WorkLog
               live
@@ -1417,10 +1597,10 @@ export const ChatSheet = ({
               stopping={stopping}
             />
           )}
-          <div ref={bottom} />
-        </div>
-        </div>
-      </div>
+            </AssistantThreadView>
+          </Suspense>
+        </ChatViewBoundary>
+      ) : currentView}
 
       {/**
        * 手机端长按之后把这条消息**托起来**（D103 · issue #31）。
@@ -1443,11 +1623,12 @@ export const ChatSheet = ({
       {rewrite && (
         <RewriteSheet
           preview={rewrite === 'asking' ? null : rewrite}
-          onCancel={() => setRewrite(null)}
+          onCancel={() => { previewSerial.current++; previewRef.current = false; setRewrite(null); setRewriteTarget(null); }}
           onConfirm={() => {
-            const editId = editing?.id;
+            const target = rewriteTarget;
             setRewrite(null);
-            void send({}, undefined, editId);
+            setRewriteTarget(null);
+            if (target) void send({}, target.body, target.id);
           }}
         />
       )}
@@ -1516,6 +1697,7 @@ export const ChatSheet = ({
           </div>
         )}
         {attErr && <div style={{ color: T.amber, fontSize: 12, marginBottom: 6 }}>{attErr}</div>}
+        {preparingAttachments && <div role="status" style={{ color: T.textLight, fontSize: 12, marginBottom: 6 }}>{tr('正在准备附件…')}</div>}
         {savedNote && (
           <div style={{ color: T.green, fontSize: 12, marginBottom: 6 }}>✅ {savedNote}</div>
         )}
@@ -1746,6 +1928,7 @@ export const ChatSheet = ({
         <div className="composer" data-busy={transcribing} style={{ paddingLeft: 8 }}>
           <button
             onClick={() => setPlusOpen((v) => !v)}
+            disabled={preparingAttachments || draftReady !== scope}
             style={{
               flexShrink: 0,
               display: 'flex',
@@ -1789,7 +1972,7 @@ export const ChatSheet = ({
              *    光标和选区跟着没了**，而转录恰恰要插在光标处 / 替换选中的那一段。
              *    `readOnly` 挡住输入、留住光标 —— 这正是这里要的那一半。
              */
-            readOnly={transcribing}
+            readOnly={transcribing || Boolean(rewrite) || draftReady !== scope}
             /**
              * 桌面端 Enter 发送、Shift+Enter 换行 —— 所有聊天界面的肌肉记忆（issue #7）。
              * ⚠️ **手机上保持原样**：软键盘那个键就是换行，改了反而按不出换行。
@@ -1806,10 +1989,10 @@ export const ChatSheet = ({
           />
           <button
             onClick={() =>
-              rec ? void stopRec() : void startRecording().then((h) => (setSeconds(0), setRec(h)))
+              rec ? void stopRec() : void beginRecording()
             }
             // 转写还没回来时不让再录 —— 那一下会把攒着的这段顶掉
-            disabled={transcribing}
+            disabled={transcribing || Boolean(rewrite) || sending || draftReady !== scope}
             style={{ color: rec ? T.red : T.textSoft, padding: 8, opacity: transcribing ? 0.4 : 1 }}
             aria-label={rec ? '停止录音' : tr('录音')}
           >
@@ -1843,16 +2026,21 @@ export const ChatSheet = ({
             const list = e.target.files;
             if (!list?.length) return;
             const kind = pendingKind.current;
+            const attachmentScope = scope;
+            preparingAttachmentsRef.current = true;
+            setPreparingAttachments(true);
             // 🔴 先读字节、图片压小，再进列表（D132 · issue #53）—— 句柄过一会儿就死，见 image.ts
             void Promise.all([...list].map((f) => readForUpload(f, kind)))
               .then((prepared) => {
+                if (!mounted.current || activeScope.current !== attachmentScope) return;
                 setAtts((cur) => {
                   const r = addFiles(cur, prepared, kind);
                   setAttErr(r.ok ? '' : r.reason);
                   return r.attachments;
                 });
               })
-              .catch((err: Error) => setAttErr(tr('读取附件失败：{a}', { a: err.message })));
+              .catch((err: Error) => { if (mounted.current) setAttErr(tr('读取附件失败：{a}', { a: err.message })); })
+              .finally(() => { preparingAttachmentsRef.current = false; if (mounted.current) setPreparingAttachments(false); });
           }}
         />
         </div>

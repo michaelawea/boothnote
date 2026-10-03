@@ -84,7 +84,15 @@ import { inheritance, ownerOf, scopeOf } from './supersede.ts';
 import { suggestProjectCode } from './projectCode.ts';
 import { registerAdmin } from './admin.ts';
 import { portalStatus, registerPortal } from './portal.ts';
-import { ingestNote } from './ingest.ts';
+import { ingestNote, type IngestResult } from './ingest.ts';
+import { getOrCreateClientThread, isUuid, ThreadIdentityError } from './threadIdentity.ts';
+import { answerQuestion, hydrateQuestionsForThread, QuestionError } from './questions.ts';
+import { TargetValidationError } from './targetCandidates.ts';
+import { sharedRecordReferences } from './sharedRecords.ts';
+import { acquireCommitWorkerLease } from './commitWorkerLease.ts';
+import { hasProposalItems, listProposalItems, queueProposalItems, cancelProposalItem,
+  summaryProposalItems, refreshProposalBatch, recoverInterruptedProposalItems,
+  ProposalItemError, type ItemSelection } from './proposal-items.ts';
 import {
   registerChannels,
   registerLabChannel,
@@ -376,7 +384,16 @@ app.get('/threads', { preHandler: requireAuth }, async (req) => {
 });
 
 app.post('/threads', { preHandler: requireAuth }, async (req, reply) => {
-  const { title, companyCode } = (req.body ?? {}) as { title?: string; companyCode?: string };
+  const { title, companyCode, clientThreadId } = (req.body ?? {}) as { title?: string; companyCode?: string; clientThreadId?: string };
+  if (clientThreadId !== undefined) {
+    try {
+      const id = await getOrCreateClientThread({ userId: req.user!.id, title, companyCode, clientThreadId });
+      return reply.code(201).send({ id });
+    } catch (error) {
+      if (error instanceof ThreadIdentityError) return reply.code(error.status).send({ error: error.code });
+      throw error;
+    }
+  }
   const [t] = await sql<Array<{ id: string }>>`
     insert into thread (user_id, title, company_code)
     values (${req.user!.id}, ${title ?? null}, ${companyCode ?? null}) returning id`;
@@ -400,7 +417,7 @@ app.get('/threads/:id', { preHandler: requireAuth }, async (req, reply) => {
   if (!t) return reply.code(404).send({ error: 'not_found' });
 
   const messages = await sql`
-    select m.id, m.role, m.text, m.inbox_id, m.meta, m.created_at,
+    select m.id, m.role, m.text, m.inbox_id, i.client_id, m.meta, m.created_at,
            -- 🔴 被改口取代的那些（D90 · issue #23）。**照样返回、照样显示** ——
            -- 取代不是删除，原话一个字没动。界面淡一档 + 一句「已改」，
            -- 因为「看不见」和「不存在」必须分得开（这个仓库最贵的 bug 全长那样）。
@@ -431,6 +448,7 @@ app.get('/threads/:id', { preHandler: requireAuth }, async (req, reply) => {
              where a.inbox_id = m.inbox_id
            ), '[]'::jsonb) as attachments
     from thread_message m
+    left join inbox i on i.id = m.inbox_id
     left join message_supersede ms on ms.message_id = m.id
     left join staging s on s.inbox_id = m.inbox_id
     -- 最近一轮 agent_run 的收尾信息（D74）：停止原因 + 耗时。
@@ -455,7 +473,29 @@ app.get('/threads/:id', { preHandler: requireAuth }, async (req, reply) => {
     where thread_id = ${id} and status = 'running'
     order by created_at desc limit 1`;
 
-  return { thread: t, messages, running: running ?? null };
+  const hydrated = await hydrateQuestionsForThread(id, req.user!.id, messages);
+  const projected = await Promise.all(hydrated.map(async (message: any) => {
+    const items = message.staging_id ? await listProposalItems(message.staging_id) : [];
+    return { ...message, proposal_items: items, item_summary: items.length ? summaryProposalItems(items) : null };
+  }));
+  return { thread: t, messages: projected, running: running ?? null };
+});
+
+app.post('/threads/:id/questions/:questionId/answers', { preHandler: requireAuth }, async (req, reply) => {
+  const { id, questionId } = req.params as { id: string; questionId: string };
+  const body = (req.body ?? {}) as { clientId?: string; expectedRevision?: string; optionId?: string; text?: string };
+  if (!isUuid(id) || !isUuid(questionId) || !isUuid(body.clientId) || typeof body.expectedRevision !== 'string')
+    return reply.code(400).send({ error: 'invalid_question_answer' });
+  try {
+    const result = await answerQuestion({ ...body, clientId: body.clientId, expectedRevision: body.expectedRevision,
+      threadId: id, questionId, userId: req.user!.id });
+    if (result.requiresAgent && !result.duplicate) enqueue(result.inboxId);
+    return reply.code(result.duplicate ? 200 : 201).send(result);
+  } catch (error) {
+    if (error instanceof QuestionError || error instanceof TargetValidationError || error instanceof ProposalItemError)
+      return reply.code(error.status).send({ error: error.code });
+    throw error;
+  }
 });
 
 /**
@@ -636,6 +676,8 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
     );
     return reply.code(400).send({ error: 'missing_client_id' });
   }
+  if (payload.clientThreadId !== undefined && !isUuid(payload.clientThreadId))
+    return reply.code(400).send({ error: 'invalid_client_thread_id' });
 
   /**
    * 🔴 **速记不自动跑 agent**（D31，维护者 2026-07-31 定，2026-08-03 重申）。
@@ -656,7 +698,9 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
    * 幂等 → 建对话 → inbox → 附件 → staging → 对话消息，行为与抽出前逐行一致；
    * 「客户端已转好的别再转一遍」（issue #15）那条也搬了过去。
    */
-  const ing = await ingestNote({
+  let ing: IngestResult;
+  try {
+    ing = await ingestNote({
     userId: req.user!.id,
     clientId: payload.clientId,
     text: payload.text ?? null,
@@ -664,13 +708,20 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
     visitLabel: payload.visitLabel ?? null,
     deviceCreatedAt: payload.createdAt ? new Date(payload.createdAt) : null,
     threadId: payload.threadId ?? null,
+    clientThreadId: payload.clientThreadId,
     toAgent,
     source: payload.threadId ? 'followup' : 'note',
     transcript: payload.transcript,
     audio,
     audioSeconds: payload.audioSeconds ?? null,
     files,
-  });
+    });
+  } catch (error) {
+    if (error instanceof ThreadIdentityError) return reply.code(error.status).send({ error: error.code });
+    if (error instanceof Error && 'code' in error && error.code === 'client_id_conflict')
+      return reply.code(409).send({ error: 'client_id_conflict' });
+    throw error;
+  }
   if (ing.duplicate)
     return reply.code(200).send({
       inboxId: ing.inboxId,
@@ -720,7 +771,11 @@ app.post('/inbox', { preHandler: requireAuth }, async (req, reply) => {
   if (supersedes && threadId && newMessageId) {
     // 「这一句会盖掉什么」和预览端点**共用一份判断**（`supersede.ts`）
     const scope = await scopeOf(supersedes, threadId, req.user!.id, newMessageId);
-    if (!scope) {
+    const scopeHasItems = scope ? (await Promise.all(scope.inboxIds.map(async (inboxId) => {
+      const [row] = await sql<Array<{ id: string }>>`select id from staging where inbox_id = ${inboxId}`;
+      return row ? hasProposalItems(row.id) : false;
+    }))).some(Boolean) : false;
+    if (!scope || scopeHasItems) {
       supersedeFailed = true;
     } else {
       for (const id of scope.messageIds) {
@@ -1238,7 +1293,7 @@ app.get('/staging', { preHandler: requireAuth }, async (req) => {
     order by s.created_at desc limit 200`;
   // `scope` 保留在响应里 —— 它现在是一个**常量**，用来让调用方（和冒烟脚本）
   // 一眼看出「这个接口只会给你自己的」，而不是靠读文档相信这件事。
-  return { items: rows, scope: 'own' as const };
+  return { items: await projectProposalRows(rows), scope: 'own' as const };
 });
 
 /**
@@ -1292,8 +1347,15 @@ app.get('/records', { preHandler: requireAuth }, async (req, reply) => {
       and s.record_deleted_at is null
     order by i.created_at desc limit 300`;
 
-  return { items: rows, scope: 'own' as const };
+  return { items: await projectProposalRows(rows), scope: 'own' as const };
 });
+
+async function projectProposalRows(rows: Array<any>) {
+  return Promise.all(rows.map(async (row) => {
+    const items = await listProposalItems(row.id);
+    return { ...row, proposal_items: items, item_summary: items.length ? summaryProposalItems(items) : null };
+  }));
+}
 
 /**
  * 「这条已经从看板上删掉了」（D93）。
@@ -1368,8 +1430,12 @@ app.get('/staging/:id/deletion', { preHandler: requireAuth }, async (req, reply)
   const { id } = req.params as { id: string };
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
 
   const p = deletionPlan(st as DeletableRow);
+  const shared = await sharedRecordReferences(p.refs, st.id);
+  if (shared.length) return reply.code(409).send({ error: 'shared_records',
+    message: req.user!.locale === 'en' ? 'Other matters refer to these CRM records. Review their contributions before deleting.' : '这些 CRM 记录也被其他事项引用，请先核对共同记录再删除。', records: shared });
   return {
     status: st.status,
     noteDeletedAt: st.note_deleted_at,
@@ -1426,6 +1492,7 @@ app.delete('/staging/:id/record', { preHandler: requireAuth }, async (req, reply
   const { id } = req.params as { id: string };
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
   if (st.record_deleted_at) return { alreadyDeleted: true, deletedAt: st.record_deleted_at };
   if (['confirming', 'committing'].includes(st.status)) {
     return reply.code(409).send({
@@ -1435,6 +1502,9 @@ app.delete('/staging/:id/record', { preHandler: requireAuth }, async (req, reply
   }
 
   const p = deletionPlan(st as DeletableRow);
+  const shared = await sharedRecordReferences(p.refs, st.id);
+  if (shared.length) return reply.code(409).send({ error: 'shared_records',
+    message: req.user!.locale === 'en' ? 'Other matters refer to these CRM records. Review their contributions before deleting.' : '这些 CRM 记录也被其他事项引用，请先核对共同记录再删除。', records: shared });
   const r = p.refs.length ? await softDeleteRecords(p.refs) : { deleted: [], failed: [] };
 
   /**
@@ -1469,6 +1539,7 @@ app.post('/staging/:id/record/restore', { preHandler: requireAuth }, async (req,
   const { id } = req.params as { id: string };
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
 
   const [row] = await sql<Array<{ refs: unknown }>>`
     select record_deleted_refs as refs from staging where id = ${st.id}`;
@@ -1615,6 +1686,7 @@ app.post('/staging/:id/confirm', { preHandler: requireAuth }, async (req, reply)
 
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
   if (st.record_deleted_at) return reply.code(409).send(RECORD_DELETED);
   if (st.status === 'confirmed') return reply.code(200).send({ alreadyConfirmed: true });
   /**
@@ -1658,11 +1730,77 @@ app.post('/staging/:id/confirm', { preHandler: requireAuth }, async (req, reply)
   return { queued: true, commitAt, undoMs: env.confirmDelayMs };
 });
 
+app.post('/staging/:id/items/confirm', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const st = isUuid(id) ? await loadOwned(id, req.user!) : null;
+  if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (st.record_deleted_at) return reply.code(409).send(RECORD_DELETED);
+  const { items } = (req.body ?? {}) as { items?: ItemSelection[] };
+  if (!Array.isArray(items) || items.some((item) => !isUuid(item?.itemId) || !Number.isInteger(item?.revision)))
+    return reply.code(422).send({ error: 'invalid_item_selection' });
+  try {
+    return { ...(await queueProposalItems(id, req.user!.id, items)), undoMs: env.confirmDelayMs };
+  } catch (error) {
+    if (error instanceof ProposalItemError || error instanceof TargetValidationError)
+      return reply.code(error.status).send({ error: error.code, message: error.message });
+    throw error;
+  }
+});
+
+app.get('/staging/:id/items', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!isUuid(id) || !(await loadOwned(id, req.user!))) return reply.code(404).send({ error: 'not_found' });
+  const items = await listProposalItems(id);
+  return { items, summary: summaryProposalItems(items) };
+});
+
+app.get('/proposal-items/:id/operations', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!isUuid(id)) return reply.code(404).send({ error: 'not_found' });
+  const [item] = await sql`select id from proposal_item where id = ${id} and user_id = ${req.user!.id}`;
+  if (!item) return reply.code(404).send({ error: 'not_found' });
+  const operations = await sql`
+    select o.id, r.revision, o.role, o.state, o.input, o.result, o.error, o.audit, o.updated_at
+    from item_operation o join proposal_revision r on r.id = o.revision_id
+    where r.item_id = ${id} order by r.revision, o.created_at, o.id`;
+  return { operations };
+});
+
+app.delete('/proposal-items/:id/confirm', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const { revision } = (req.body ?? {}) as { revision?: number };
+  if (!isUuid(id) || !Number.isInteger(revision)) return reply.code(422).send({ error: 'invalid_item_selection' });
+  const cancelled = await cancelProposalItem(id, req.user!.id, revision!);
+  return cancelled ? { cancelled: true } : reply.code(409).send({ error: 'too_late_or_stale' });
+});
+
+/** Withdrawing a draft never deletes CRM records from an earlier revision. */
+app.delete('/proposal-items/:id', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const { revision } = (req.body ?? {}) as { revision?: number };
+  if (!isUuid(id) || !Number.isInteger(revision)) return reply.code(422).send({ error: 'invalid_item_selection' });
+  const rows = await sql<Array<{ staging_id: string }>>`
+    update proposal_revision r set status = 'withdrawn', confirm_after = null,
+      confirm_payload = null, confirm_by = null, updated_at = now()
+    from proposal_item i where r.item_id = i.id and i.id = ${id} and i.user_id = ${req.user!.id}
+      and i.current_revision = ${revision!} and r.revision = ${revision!} and r.status = 'ready'
+      and not exists(select 1 from item_operation o where o.revision_id = r.id
+        and o.state in ('succeeded','running','unknown'))
+      and not exists(select 1 from item_record_link l where l.item_id = i.id and l.created_here
+        and not exists(select 1 from proposal_revision prior where prior.item_id = i.id and prior.status = 'confirmed'))
+    returning r.staging_id`;
+  if (!rows[0]) return reply.code(409).send({ error: 'item_not_ready_or_stale',
+    message: req.user!.locale === 'en' ? 'This proposal changed or has already started writing. Refresh and review its recorded operations.' : '提案已变化或已开始写入，请刷新并核对执行回执。' });
+  await refreshProposalBatch(rows[0].staging_id);
+  return { withdrawn: true };
+});
+
 /** 撤销。5 秒内点 = Twenty 里从来没写过这条（重录的撤销 = 恢复上一次的样子）。 */
 app.delete('/staging/:id/confirm', { preHandler: requireAuth }, async (req, reply) => {
   const { id } = req.params as { id: string };
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
   const ok = await cancelConfirm(st.id);
   // 撤不掉只有一种情况：已经过了 5 秒、Twenty 里已经有了。
   // 这时候诚实地说「来不及了」，而不是假装撤销成功再去删记录。
@@ -1683,6 +1821,7 @@ app.post('/staging/:id/reconfirm', { preHandler: requireAuth }, async (req, repl
 
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
   if (st.record_deleted_at) return reply.code(409).send(RECORD_DELETED);
   if (st.status !== 'confirmed') {
     return reply.code(409).send({
@@ -1754,6 +1893,10 @@ app.post('/staging/confirm-batch', { preHandler: requireAuth }, async (req, repl
       results.push({ id: it.id, ok: false, reason: 'not_found' });
       continue;
     }
+    if (await hasProposalItems(st.id)) {
+      results.push({ id: it.id, ok: false, reason: 'multi_item_endpoint_required' });
+      continue;
+    }
     if (st.status === 'confirmed') {
       results.push({ id: it.id, ok: true, reason: 'already' });
       continue;
@@ -1811,6 +1954,8 @@ registerSurveys(app, requireAuth);
 // ── 订单门户的项目进度（D139–D142）：只有门户服务端经本机 127.0.0.1 调，secret 留空 = 整组 503。──
 registerPortal(app);
 
+const releaseCommitWorkerLease = await acquireCommitWorkerLease();
+app.addHook('onClose', releaseCommitWorkerLease);
 warnIfColumnSwitchOn();
 /**
  * 🔴 **这一行必须排在 `resumePending()` 前面**（T99）—— 它收的是上个进程被杀时
@@ -1824,6 +1969,7 @@ await resumePending();
  * D143 两段式排队的收尾：上一个进程「排上了、汇报还没送到」时被杀，留下的占位（confirm_after 在一天后）
  * 收回成 ready → 出站下一跳重新汇报。必须在心跳起来之前 —— 占位本来就认领不到，但别让它多活一秒。
  */
+await recoverInterruptedProposalItems();
 await recoverUnarmedAutoCommits();
 await resumeConfirming();
 startConfirmTicker();

@@ -20,6 +20,8 @@ import { ChainCard } from './ChainCard';
 import { ProjectCard, type DocProposal, type ProjectProposal, type WorkItemProposal } from './ProjectCard';
 import { PickSheet } from './PickSheet';
 import { locale, t } from '../i18n';
+import { ProposalItemsCard } from './ProposalItemsCard';
+import type { ProposalItemView } from '../proposal-items';
 
 /**
  * 核对卡 —— 人和 agent 之间唯一的交接点。
@@ -72,7 +74,7 @@ const LABELS: Record<string, string> = {
 const labelOf = (k: string): string =>
   k === 'companyCode' && locale() === 'en' ? 'Account' : t(LABELS[k] ?? k);
 
-export const ReviewCard = ({
+const LegacyReviewCard = ({
   stagingId,
   extracted,
   confidence,
@@ -986,6 +988,11 @@ export const ReviewCard = ({
     </div>
   );
 };
+
+/** Separate components keep legacy effects from running for a multi-item proposal. */
+export const ReviewCard = (props: Parameters<typeof LegacyReviewCard>[0] & { proposalItems?: ProposalItemView[] }) =>
+  props.proposalItems?.length ? <ProposalItemsCard stagingId={props.stagingId} items={props.proposalItems} onDone={props.onDone} />
+    : <LegacyReviewCard {...props} />;
 
 /** 弹层标题下那行小字。只在「说清楚有什么后果」时才写，没必要的就不写。 */
 /** 存中文，用的那一行才 `t()`（模块级 `t()` 会在 import 时定死语言 —— issue #53 A3 那一类）。 */

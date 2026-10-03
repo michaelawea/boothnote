@@ -100,6 +100,11 @@ units() {
       src/__tests__/followup.test.ts \
       src/__tests__/report.test.ts \
       src/__tests__/portalModel.test.ts
+  into services/gateway node --test \
+      src/__tests__/item-operations.test.ts \
+      src/__tests__/proposal-model.test.ts \
+      src/__tests__/proposal-item-ownership.test.ts \
+      src/__tests__/questions.test.ts
 
   # agent 从 2026-08-05 起是独立目录（issue #17）—— 它的测试跟着它走。
   # ⚠️ cwd 仍然是 services/gateway：node_modules 在那儿，agent 靠祖先目录找到它。
@@ -112,6 +117,8 @@ units() {
       agent/src/__tests__/playbooks.test.ts \
       agent/src/__tests__/retry.test.ts \
       agent/src/__tests__/session.test.ts \
+      agent/src/__tests__/target-question.test.ts \
+      agent/src/__tests__/records.test.ts \
       agent/src/__tests__/title.test.ts \
       agent/src/__tests__/transcribe.test.ts
 }
@@ -214,7 +221,8 @@ case "$MODE" in
       *" --here "*) integration_here ;;
       *)            integration "$@" ;;
     esac ;;
-  all)         checks; units; integration ;;
+  all)         checks; units; integration; run python3 scripts/test-isolated-agent.py ;;
+  agent-flows) run python3 scripts/test-isolated-agent.py ;;
   scenarios)   scenarios ;;
   smoke)       run ./scripts/smoke.sh "$@" ;;
   *)
@@ -226,7 +234,8 @@ case "$MODE" in
   integration   集成 —— **一次性环境**，跑完什么都不留（要 docker）
                   --here          改成对着你现在开着的那套环境跑（会留数据）
                   --with-twenty   一次性环境 + 连本地 Twenty（会写 CRM，末尾自动清）
-  all           unit + integration
+  all           unit + integration + agent-flows
+  agent-flows   真网关 + 一次性数据库 + 假 CRM，验证目标绑定与多事项执行
   scenarios     业务场景验收（真调模型、真写 Twenty，几分钟）
   smoke <url>   只读冒烟，对生产也安全
 EOS

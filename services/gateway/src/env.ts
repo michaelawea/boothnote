@@ -80,6 +80,8 @@ export const env = {
   // ── agent（阶段 P）─────────────────────────────────────────────
   /** 关掉它，采集照常，只是不抽字段 —— 三段解耦的服务端一半（集成测试断言这条）。 */
   agentEnabled: opt('AGENT_ENABLED', '1') !== '0',
+  /** Proposal capability is independent of the opt-in frontend renderer. */
+  agentMultiItems: opt('AGENT_MULTI_ITEMS', '1') !== '0',
   /** 硬上限。超了把已经拿到的写进 staging 并标 partial，不让一条卡住整个队列。 */
   agentMaxSteps: Number(opt('AGENT_MAX_STEPS', '8')),
   /**

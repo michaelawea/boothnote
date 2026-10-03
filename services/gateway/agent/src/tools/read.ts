@@ -5,14 +5,17 @@ import { Type } from '@earendil-works/pi-ai';
 
 import { env, sql } from '../host.ts';
 import { findSimilar } from '../host.ts';
-import { playbook, playbookBlock, playbookNames } from '../skills.ts';
+import { playbook, playbookNames } from '../skills.ts';
+import { contextualPlaybook } from '../prompt.ts';
 import {
   getCompanyByCode,
   listIntelItems,
   listIntelValues,
-  listOpenSupportCases,
   listOpportunities,
   listProductFitments,
+  readCompanyTargetCandidates,
+  registerCandidates,
+  candidateText,
 } from '../host.ts';
 import { computeGaps } from '../host.ts';
 import {
@@ -63,7 +66,7 @@ export const readSkills = (ctx: SkillContext): Skill[] => [
             : '手册库是空的（playbook 没加载成功）—— 按系统提示词里的铁律直接干。',
         };
       }
-      return { text: playbookBlock(name) };
+      return { text: contextualPlaybook(ctx, name) };
     },
   },
 
@@ -219,16 +222,20 @@ export const readSkills = (ctx: SkillContext): Skill[] => [
       '**跟过的客户，动 stage 之前先调它。**',
     parameters: Type.Object({
       code: Type.String({ description: '客户代号，来自 search_companies' }),
+      query: Type.Optional(Type.String({ description: '已有工单/项目/任务编号、标题或关键词，缩小候选；明确编号允许查到已关闭工单并显示其实际状态。' })),
     }),
-    execute: async ({ code }: { code: string }) => {
+    execute: async ({ code, query }: { code: string; query?: string }) => {
       const company = await getCompanyByCode(code);
       if (!company) return { text: `没有代号为 ${code} 的客户。` };
 
-      const [opps, fits, cases] = await Promise.all([
-        listOpportunities(company.id).catch(() => []),
-        listProductFitments(company.id).catch(() => []),
-        listOpenSupportCases(company.id).catch(() => []),
+      const [oppsRead, fitsRead, candidates] = await Promise.all([
+        listOpportunities(company.id).then((rows) => ({ ok: true as const, rows })).catch(() => ({ ok: false as const, rows: [] })),
+        listProductFitments(company.id).then((rows) => ({ ok: true as const, rows })).catch(() => ({ ok: false as const, rows: [] })),
+        readCompanyTargetCandidates(company.id, code, ctx.userId, ctx.stagingId, query),
       ]);
+      const opps = oppsRead.rows;
+      const fits = fitsRead.rows;
+      registerCandidates(ctx, Object.values(candidates));
 
       const lines: string[] = [];
       if (opps.length) {
@@ -249,20 +256,16 @@ export const readSkills = (ctx: SkillContext): Skill[] => [
           );
         }
       }
-      if (cases.length) {
-        lines.push('还没关掉的售后：');
-        for (const c of cases) lines.push(`· ${c.name} —— ${c.caseStatus}（${c.severity}）`);
-      }
-
-      if (!lines.length) {
-        return {
-          text: `${code} 在 CRM 里还没有任何项目 / 在位品牌 / 售后记录 —— 这是第一次记它。`,
-          details: { opportunities: 0, fitments: 0, openCases: 0 },
-        };
-      }
+      if (!oppsRead.ok) lines.push('商机检索失败，不能据此认定没有项目。');
+      if (!fitsRead.ok) lines.push('在位品牌检索失败，不能据此认定没有记录。');
+      lines.push(candidateText('售后关联候选（先看故障差异，不按同SKU/最近一条自动合并）：', candidates.supportCases));
+      lines.push(candidateText('项目关联候选：', candidates.projects));
+      lines.push(candidateText('任务线程关联候选：', candidates.workItems));
+      lines.push(candidateText('自己的待确认事项候选：', candidates.pending));
+      lines.push('候选 handle 只能用于本轮。推荐但原话没指定编号时用 ask_user(targetOptions)，并提供 create/clarify 出口；明确编号用当前提案工具的 targetCandidateHandle 预填。选择只改提案，确认入库仍由人决定。');
       return {
         text: lines.join('\n'),
-        details: { opportunities: opps.length, fitments: fits.length, openCases: cases.length },
+        details: { opportunities: opps.length, fitments: fits.length, searches: candidates, opportunityReadOk: oppsRead.ok, fitmentReadOk: fitsRead.ok },
       };
     },
   },

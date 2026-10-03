@@ -58,6 +58,12 @@ export {
  */
 export { pendingProjectProposals, reserveProjectCode } from '../../src/projectCode.ts';
 
+// Verified candidates and durable questions stay behind the gateway boundary.
+export { readCompanyTargetCandidates, readProjectTargetCandidates, candidateText, registerCandidates } from '../../src/targetCandidates.ts';
+export { createAgentQuestion, bindExplicitCandidate, resolveExplicitCandidate, persistAgentQuestions } from '../../src/questions.ts';
+export type { AgentQuestionInput } from '../../src/questions.ts';
+export { proposeRecords, listThreadItems, hasProposalItems } from '../../src/proposal-items.ts';
+
 /**
  * ── 🔴 唯一的三个「会写进 CRM」的函数 ─────────────────────────────────
  *
