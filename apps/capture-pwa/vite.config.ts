@@ -85,6 +85,17 @@ export default defineConfig({
         // 只缓存应用外壳。**不用 Background Sync** —— iOS Safari 不支持它，
         // 上传重试全部由前台的 sync.ts 负责（见 §4.5 / R10）。
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // 测试版只在首次打开时下载；现行界面的离线安装不承担这个包。
+        globIgnores: ['**/AssistantThreadView-*.{js,css}'],
+        runtimeCaching: [{
+          urlPattern: ({ url, sameOrigin }) => sameOrigin && /^\/assets\/AssistantThreadView-[^/]+\.(js|css)$/.test(url.pathname),
+          handler: 'CacheFirst',
+          options: {
+            cacheName: 'assistant-ui-dev',
+            cacheableResponse: { statuses: [200] },
+            expiration: { maxEntries: 4, maxAgeSeconds: 30 * 24 * 60 * 60 },
+          },
+        }],
         navigateFallback: 'index.html',
         /**
          * 🔴 **这条 denylist 不是可选项。**

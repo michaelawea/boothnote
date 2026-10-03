@@ -8,17 +8,21 @@ import {
   hashItemOperationInput,
   ItemOperationConflictError,
   markInterruptedItemOperationsUnknown,
+  itemOperationResetInput,
+  recordItemMutationRequest,
   resolveUnknownItemOperation,
   UnknownItemOperationError,
   type ItemOperation,
   type ItemOperationResolution,
   type ItemOperationStore,
 } from '../item-operations.ts';
+import { TwentyHttpError } from '../twenty-errors.ts';
 
 class MemoryStore implements ItemOperationStore {
   rows = new Map<string, ItemOperation>();
   audit: Array<Record<string, unknown>> = [];
   failReceipt = false;
+  failRequest = false;
   key(revisionId: string, role: string) { return `${revisionId}/${role}`; }
   async getOrCreate(revisionId: string, role: string, hash: string, input: unknown) {
     const key = this.key(revisionId, role);
@@ -35,9 +39,10 @@ class MemoryStore implements ItemOperationStore {
   }
   async claim(id: string, hash: string, _at: Date, attemptId: string) {
     const row = this.rows.get(id)!;
-    if (row.input_hash !== hash || !['planned', 'failed'].includes(row.state)) return false;
+    if (row.input_hash !== hash || row.input_reset != null || !['planned', 'failed'].includes(row.state)) return false;
     row.state = 'running';
     row.attempt_id = attemptId;
+    row.request_evidence = [];
     return true;
   }
   async succeed(id: string, result: unknown, _at: Date, attemptId: string) {
@@ -66,6 +71,20 @@ class MemoryStore implements ItemOperationStore {
       }
     }
     return count;
+  }
+  async recordRequest(id: string, request: NonNullable<ItemOperation['request_evidence']>[number], _at: Date, attemptId: string) {
+    if (this.failRequest) throw new Error('request database unavailable');
+    const row = this.rows.get(id)!;
+    if (row.state !== 'running' || row.attempt_id !== attemptId) return false;
+    (row.request_evidence ??= []).push(structuredClone(request));
+    return true;
+  }
+  async bindResetInput(id: string, previousHash: string, hash: string, input: unknown) {
+    const row = this.rows.get(id)!;
+    if (row.input_hash !== previousHash || !['planned','failed'].includes(row.state) ||
+        canonicalItemOperationInput(row.input_reset) !== canonicalItemOperationInput(itemOperationResetInput(input))) return false;
+    row.input_hash = hash; row.input = structuredClone(input); row.input_reset = null; row.state = 'planned'; row.error = null;
+    return true;
   }
   async resolve(revisionId: string, role: string, resolution: ItemOperationResolution, actorId: string, at: Date) {
     const row = this.rows.get(this.key(revisionId, role));
@@ -188,6 +207,17 @@ describe('durable remote operation', () => {
     assert.equal(store.rows.get('revision-1/create-case')!.state, 'failed');
     assert.equal(await run(async () => 'case-1'), 'case-1');
   });
+  it('a structured Twenty validation rejection is failed while 5xx and proxy errors remain unknown', async () => {
+    for (const [status, response, expected] of [
+      [400, { statusCode: 400, messages: ['Invalid enum value'] }, 'failed'],
+      [503, { statusCode: 503, messages: ['Server unavailable'] }, 'unknown'],
+      [400, { raw: '<html>proxy error</html>' }, 'unknown'],
+    ] as const) {
+      const { run, store } = fixture();
+      await assert.rejects(run(async () => { throw new TwentyHttpError('POST', '/rest/visits', status, response, JSON.stringify(response)); }));
+      assert.equal(store.rows.get('revision-1/create-case')!.state, expected);
+    }
+  });
   it('a void result is stored as JSON null and replays without executing', async () => {
     const { run, store } = fixture();
     await run(async () => undefined);
@@ -199,6 +229,83 @@ describe('durable remote operation', () => {
     await assert.rejects(run(async () => { throw new Error('bad\n'.repeat(1000)); }), UnknownItemOperationError);
     assert.equal(store.rows.get('revision-1/create-case')!.error!.length, 500);
     assert.ok(!store.rows.get('revision-1/create-case')!.error!.includes('\n'));
+  });
+});
+
+describe('request evidence is frozen before a remote mutation and fenced by attempt', () => {
+  const request = { method: 'PATCH', path: '/rest/supportCases/fixture', body: { caseStatus: 'IN_PROGRESS' } };
+  it('records a detached request before execute can mutate its caller payload', async () => {
+    const { run, store } = fixture();
+    const mutable = structuredClone(request);
+    await run(async () => { await recordItemMutationRequest(mutable); mutable.body.caseStatus = 'CLOSED'; return 'case-1'; });
+    assert.deepEqual(store.rows.get('revision-1/create-case')!.request_evidence, [request]);
+  });
+  it('failure to store a request prevents the remote write and permits a later clean attempt', async () => {
+    const { run, store } = fixture(); let writes = 0;
+    store.failRequest = true;
+    await assert.rejects(run(async () => { await recordItemMutationRequest(request); writes++; return 'case-1'; }), DefiniteItemOperationError);
+    assert.equal(writes, 0);
+    assert.equal(store.rows.get('revision-1/create-case')!.state, 'failed');
+    store.failRequest = false;
+    await run(async () => { await recordItemMutationRequest(request); writes++; return 'case-1'; });
+    assert.equal(writes, 1);
+  });
+  it('a definitely rejected retry replaces only its own previous-attempt wire evidence', async () => {
+    const { run, store } = fixture();
+    await assert.rejects(run(async () => { await recordItemMutationRequest(request); throw new DefiniteItemOperationError('rejected'); }));
+    const later = { ...request, body: { caseStatus: 'CLOSED' } };
+    await run(async () => { await recordItemMutationRequest(later); return 'case-1'; });
+    assert.deepEqual(store.rows.get('revision-1/create-case')!.request_evidence, [later]);
+  });
+  it('concurrent item contexts do not attach one account request to another journal entry', async () => {
+    const { store, options } = fixture();
+    await Promise.all(['one', 'two'].map((revision) => durableItemOperation(revision, 'update', {}, async () => {
+      await Promise.resolve();
+      await recordItemMutationRequest({ ...request, path: `/rest/supportCases/${revision}` });
+    }, options)));
+    assert.equal(store.rows.get('one/update')!.request_evidence![0]!.path, '/rest/supportCases/one');
+    assert.equal(store.rows.get('two/update')!.request_evidence![0]!.path, '/rest/supportCases/two');
+  });
+  it('a second distinct mutation cannot classify an already sent operation as not-applied', async () => {
+    const { run, store } = fixture(); let writes = 0;
+    await assert.rejects(run(async () => {
+      await recordItemMutationRequest(request); writes++;
+      await recordItemMutationRequest({ ...request, body: { caseStatus: 'CLOSED' } }); writes++;
+    }), UnknownItemOperationError);
+    assert.equal(writes, 1);
+    assert.equal(store.rows.get('revision-1/create-case')!.state, 'unknown');
+  });
+});
+
+describe('explicit unapplied reset binds only the payload authorized before writes', () => {
+  const previous = { companyId: 'company-1', fields: { severity: 'LOW' }, target: null };
+  const corrected = { companyId: 'company-1', fields: { severity: 'HIGH' }, target: null };
+  it('failed input cannot change without the queue authorizing a safe reset', async () => {
+    const { store, options } = fixture();
+    await assert.rejects(durableItemOperation('revision-1','visit:create',previous,async()=>{ throw new DefiniteItemOperationError('validation'); },options));
+    await assert.rejects(durableItemOperation('revision-1','visit:create',corrected,async()=>assert.fail('must not mutate'),options),ItemOperationConflictError);
+    store.rows.get('revision-1/visit:create')!.input_reset = itemOperationResetInput(corrected);
+    assert.equal(await durableItemOperation('revision-1','visit:create',corrected,async()=>'visit-1',options),'visit-1');
+    assert.equal(store.rows.get('revision-1/visit:create')!.input_reset,null);
+  });
+  it('a reset prepares later planned steps before the first corrected step succeeds', async () => {
+    const { store, options } = fixture();
+    for (const role of ['visit:create','support:update']) {
+      await store.getOrCreate('revision-1',role,hashItemOperationInput(previous),previous);
+      store.rows.get(`revision-1/${role}`)!.input_reset = itemOperationResetInput(corrected);
+    }
+    assert.equal(await durableItemOperation('revision-1','visit:create',corrected,async()=>'visit-1',options),'visit-1');
+    const exactTarget = { ...corrected, targetId: 'known-support-id' };
+    await durableItemOperation('revision-1','support:update',exactTarget,async()=>undefined,options);
+    assert.equal(store.rows.get('revision-1/support:update')!.state,'succeeded');
+    assert.deepEqual(store.rows.get('revision-1/support:update')!.input,exactTarget);
+  });
+  it('an old caller cannot claim a planned reset using the previous matching input hash', async () => {
+    const { store, options } = fixture();
+    await store.getOrCreate('revision-1','visit:create',hashItemOperationInput(previous),previous);
+    store.rows.get('revision-1/visit:create')!.input_reset = itemOperationResetInput(corrected);
+    await assert.rejects(durableItemOperation('revision-1','visit:create',previous,async()=>assert.fail('stale write'),options),ItemOperationConflictError);
+    assert.equal(store.rows.get('revision-1/visit:create')!.state,'planned');
   });
 });
 

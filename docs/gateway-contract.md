@@ -20,12 +20,20 @@
 | `POST /staging/:id/items/confirm` | `{items:[{itemId,revision,companyId?,fields?,supportCaseId?}]}`；仅确认所选事项，受控客户 UUID，提交前复验目标；保留延迟撤销窗 |
 | `DELETE /proposal-items/:id/confirm` | `{revision}`；只撤销本人该版本的延迟确认 |
 | `DELETE /proposal-items/:id` | `{revision}`；只撤回本人当前 ready 版本，原有 CRM 记录保留 |
+| `GET /proposal-items/:id/recovery?revision=N` | 本人当前版本的只读核对：逐操作 verdict、原因、实际请求及 CRM 读回；不写 CRM |
+| `POST /proposal-items/:id/recovery` | 仅 `{revision}`；服务器重新核验实际 PATCH 证据并审计成功结果；无法证明的操作继续 unknown。恢复 ready 后需用户再次确认 |
 | 旧单条确认/重录/批量/整条 CRM 删除接口 | 遇多事项返回 `409 multi_item_endpoint_required`，不默取第一项 |
 
 事项状态独立；部分成功不能显示成整批成功。远端操作回包丢失标为 `unknown`，
 不得盲重试创建；持久执行台账保留已成功步骤。多事项改口需要明确事项和版本，
-旧的整段回退路径不归档这些事项。`AGENT_MULTI_ITEMS=0` 可停用新的提案工具，
+旧的整段回退路径不归档这些事项。`AGENT_MULTI_ITEMS` 默认 `0`，显式设 `1` 才注册新的提案工具；compose 透传该值，
 已存在事项的读取及确认保持可用。钉钉暂走既有单项流程。
+
+migration 023 保存各次实际写入的 method/path/body 证据，写入前持久化，不包含认证头。
+只有 Twenty 明确、结构化的拒绝才可判定 failed；5xx、网络丢回包或无法识别的响应仍为 unknown。
+核对只认可同一客户、同一目标与实际请求的后置条件；追加还要核验操作标记和对应正文。
+创建缺少可信的记录身份，找不到记录或名字相同都不是「未执行」的证明，继续停住并提示人工核对。
+客户端不能提交成功状态、目标记录 ID 或替代回执来解除暂停，恢复操作也不自动重新确认或写 CRM。
 
 网关提交 worker 持有专用 Postgres session 排他锁，同库第二实例启动失败；
 连接断开时当前实例停止，避免失锁后继续写入。部署需先停旧网关，再启动替代实例。

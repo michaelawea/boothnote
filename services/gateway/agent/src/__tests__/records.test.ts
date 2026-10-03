@@ -3,6 +3,8 @@ import { describe, it } from 'node:test';
 
 import { newContext } from '../tools/context.ts';
 import { recordSkills } from '../tools/records.ts';
+import { writeSkills, rememberCompanySuggestion } from '../tools/write.ts';
+import { createAgentQuestion } from '../../../src/questions.ts';
 import type { ProposalItemView } from '../../../src/proposal-model.ts';
 import type { ProposeRecordsInput } from '../../../src/proposal-items.ts';
 import type { TargetBinding } from '../../../../../shared/agent-questions.mjs';
@@ -119,7 +121,7 @@ describe('structured record tool contract', () => {
     ctx.suggestedCompany = '旧的整轮建议';
     const unknownFields = {
       summary: '逆变器输出断电', suggested_company: '新客户甲',
-      suggestedCompanyFields: { name: '新客户甲', country: 'Germany', type: 'dealer' },
+      suggestedCompanyFields: { name: '新客户甲', country: 'Germany', accountType: 'dealer' },
     };
     await propose.execute({ records: [
       record({ key: 'known-case', companyCode: 'KNOWN' }),
@@ -128,7 +130,8 @@ describe('structured record tool contract', () => {
     const submitted = calls[0]!.records;
     assert.equal(submitted[0]!.companyCode, 'KNOWN');
     assert.equal(submitted[1]!.companyCode, undefined);
-    assert.deepEqual(submitted[1]!.fields, unknownFields);
+    assert.deepEqual(submitted[1]!.fields, { ...unknownFields, recordType:'support',
+      suggestedCompanyFields:{name:'新客户甲',country:'DE',accountType:'DEALER'} });
     assert.equal(ctx.proposedItems?.[1]?.companyId, null);
     assert.equal(ctx.suggestedCompany, '旧的整轮建议');
   });
@@ -280,5 +283,82 @@ describe('structured record tool contract', () => {
     assert.equal(calls.length, 0);
     assert.equal(ctx.proposed, false);
     assert.equal(ctx.proposedItems, undefined);
+  });
+});
+
+
+describe('proposal/question order and explicit customer suggestions',()=>{
+  it('先问后提交多事项会保留提案并撤掉歧义问题，模型可指定稳定itemId重问',async()=>{
+    const {ctx,propose,calls}=setup();
+    const ask=writeSkills(ctx).find((skill)=>skill.name==='ask_user')!;
+    assert.equal((await ask.execute({question:'哪一个故障？',options:['第一个','第二个']})).terminate,undefined);
+    const response=await propose.execute({records:[record(),record({key:'second-case'})]});
+    assert.equal(calls.length,1);
+    assert.equal(ctx.proposedItems?.length,2);
+    assert.equal(ctx.questions.length,0);
+    assert.match(response.text,/question_item_required/);
+    await ask.execute({question:'第二个故障何时出现？',options:['今天','昨天'],itemId:ids[1]});
+    assert.equal(ctx.questions[0]?.itemId,ids[1]);
+  });
+  it('先问后提交唯一事项可绑定该唯一身份，不凭模型或数组顺序选择多项',async()=>{
+    const {ctx,propose}=setup();
+    createAgentQuestion(ctx,{question:'何时出现？',options:['今天','昨天']});
+    await propose.execute({records:[record()]});
+    assert.equal(ctx.questions[0]?.itemId,ids[0]);
+    assert.equal(ctx.questions[0]?.revisionId,'revision-1');
+  });
+  it('先提交多事项再问而漏itemId在工具调用时被拒绝，不新增问题',async()=>{
+    const {ctx,propose}=setup();
+    await propose.execute({records:[record(),record({key:'second-case'})]});
+    const ask=writeSkills(ctx).find((skill)=>skill.name==='ask_user')!;
+    await assert.rejects(ask.execute({question:'哪一个故障？',options:['第一个','第二个']}),/必须传itemId/);
+    assert.equal(ctx.questions.length,0);
+  });
+  it('多客户flag提示仅进入明确同名项，不把最后一家建议复制给未指定客户的项',async()=>{
+    const {ctx,propose,calls}=setup();
+    rememberCompanySuggestion(ctx,{name:'Example Alpha',country:'DE',accountType:'DEALER'});
+    rememberCompanySuggestion(ctx,{name:'Example Beta',country:'FR',accountType:'DISTRIBUTOR'});
+    ctx.suggestedCompany='Example Beta';
+    await propose.execute({records:[
+      record({key:'alpha',fields:{summary:'Alpha故障',suggested_company:'Example Alpha'}}),
+      record({key:'beta',fields:{summary:'Beta故障',suggested_company:'Example Beta'}}),
+      record({key:'unknown',fields:{summary:'归属未知',sourceCompanyName:'Example Alpha'}}),
+    ]});
+    assert.deepEqual(calls[0]!.records[0]!.fields['suggestedCompanyFields'],{name:'Example Alpha',country:'DE',accountType:'DEALER'});
+    assert.deepEqual(calls[0]!.records[1]!.fields['suggestedCompanyFields'],{name:'Example Beta',country:'FR',accountType:'DISTRIBUTOR'});
+    assert.equal(calls[0]!.records[2]!.fields['suggested_company'],undefined);
+    assert.equal(calls[0]!.records[2]!.fields['sourceCompanyName'],'Example Alpha', '传闻消息来源保留，但不能当作客户');
+  });
+  it('明确itemKey可以绑定新客户，但与该项明说公司不一致时整批受控拒绝',async()=>{
+    const {ctx,propose,calls}=setup();
+    rememberCompanySuggestion(ctx,{name:'Example Alpha',country:'DE',accountType:'DEALER'},'first-case');
+    let response=await propose.execute({records:[record({key:'first-case',fields:{summary:'故障'}})]});
+    assert.equal(calls[0]!.records[0]!.fields['suggested_company'],'Example Alpha');
+    response=await propose.execute({records:[record({key:'first-case',fields:{summary:'故障',suggested_company:'Example Beta'}})]});
+    assert.equal(calls.length,1);
+    assert.match(response.text,/suggestion_item_mismatch/);
+  });
+  it('非法业务字段返回具体item key与field，不先保存合法兄弟项',async()=>{
+    const {propose,calls}=setup();
+    const response=await propose.execute({records:[record(),record({key:'inverter',fields:{summary:'故障',severity:'IMPOSSIBLE'}})]});
+    assert.equal(calls.length,0);
+    assert.match(response.text,/"key":"inverter"/);
+    assert.match(response.text,/"field":"severity"/);
+  });
+  it('关系UUID剥除后向模型明确报告，不冒充已采纳',async()=>{
+    const {propose,calls}=setup();
+    const response=await propose.execute({records:[record({fields:{summary:'故障',companyId:'invented-relationship'}})]});
+    assert.equal(calls[0]!.records[0]!.fields['companyId'],undefined);
+    assert.match(response.text,/关系或内部字段未采纳/);
+    assert.match(response.text,/companyId/);
+  });
+  it('与旧单条关系未知时不产生items，也不能退回legacy把多个事项压成一项',async()=>{
+    const {ctx,propose,calls}=setup();
+    ctx.inheritedLegacyStagingId='legacy-pending';
+    const response=await propose.execute({records:[record(),record({key:'second-case'})]});
+    assert.equal(calls.length,0);
+    assert.match(response.text,/legacy_disposition_required/);
+    const legacy=writeSkills(ctx).find((skill)=>skill.name==='propose_fields')!;
+    assert.match((await legacy.execute({recordType:'support',summary:'Flattened cases'})).text,/legacy_disposition_required/);
   });
 });

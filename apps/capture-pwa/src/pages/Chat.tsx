@@ -5,7 +5,6 @@ import { liveQuery } from 'dexie';
 import { T, fmtAgo, fmtDuration } from '../theme';
 import {
   abortThread,
-  createThread,
   deleteThread,
   downloadAttachment,
   fetchSupersedePreview,
@@ -51,11 +50,12 @@ import { useCompanies } from '../companies';
 import { t as tr } from '../i18n';
 import { spliceAt } from '../compose';
 import { assistantUiAvailable, type AgentUi } from '../agent-ui-preference';
-import { chatDraftKey, deleteChatDraft, loadChatDraft, saveChatDraft } from '../chat-drafts';
+import { chatDraftKey, loadChatDraft, moveChatDraft, saveChatDraft } from '../chat-drafts';
 import { projectMessages, type ChatEntry } from '../message-projection';
 import { ChatViewBoundary } from '../components/ChatViewBoundary';
 
-const AssistantThreadView = lazy(() => import('../components/AssistantThreadView'));
+const AssistantThreadView = import.meta.env.VITE_ASSISTANT_UI_ENABLED === '0'
+  ? null : lazy(() => import('../components/AssistantThreadView'));
 
 
 /**
@@ -265,6 +265,8 @@ export const ChatSheet = ({
   const me = session?.user;
 
   const [threadId, setThreadId] = useState<string | null>(initialThreadId ?? null);
+  // 服务端 ID 到达是同一会话；只有主动导航才换 scope 并读取另一份草稿。
+  const [conversationView, setConversationView] = useState({ threadId: initialThreadId ?? null, serial: 0 });
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [messagesScope, setMessagesScope] = useState('');
   /**
@@ -285,6 +287,9 @@ export const ChatSheet = ({
   const stoppingRef = useRef(false);
   const activeScope = useRef(initialThreadId ?? 'new');
   const conversationId = useRef<string>(crypto.randomUUID());
+  const threadAdoption = useRef<object | null>(null);
+  const activeUser = useRef(me?.userCode);
+  activeUser.current = me?.userCode;
   const dispatch = useRef<((text: string) => void) | null>(null);
   const onRuntimeReady = useCallback((next: ((text: string) => void) | null) => { dispatch.current = next; }, []);
   const [draftReady, setDraftReady] = useState<string | null>(null);
@@ -350,6 +355,7 @@ export const ChatSheet = ({
   useSyncTick(); // 上传进度一变就重渲染
 
   const [text, setText] = useState('');
+  const composerRevision = useRef(0);
   const [atts, setAtts] = useState<LocalAttachment[]>([]);
   const [attErr, setAttErr] = useState('');
   const [preparingAttachments, setPreparingAttachments] = useState(false);
@@ -428,13 +434,16 @@ export const ChatSheet = ({
     return () => { mounted.current = false; recordingHandle.current?.cancel(); };
   }, []);
 
-  const scope = chatDraftKey(me?.userCode ?? '', threadId);
+  const draftKey = chatDraftKey(me?.userCode ?? '', threadId);
+  const initialDraftKey = chatDraftKey(me?.userCode ?? '', conversationView.threadId);
+  const scope = `${initialDraftKey}:${conversationView.serial}`;
   activeScope.current = scope;
   useEffect(() => {
+    threadAdoption.current = null;
     if (!me) return;
     let alive = true;
     setDraftReady(null);
-    void loadChatDraft(scope).then((draft) => {
+    void loadChatDraft(initialDraftKey).then((draft) => {
       if (!alive) return;
       conversationId.current = draft?.conversationId ?? crypto.randomUUID();
       setText(draft?.text ?? '');
@@ -449,14 +458,18 @@ export const ChatSheet = ({
       setDraftReady(scope);
     });
     return () => { alive = false; };
-  }, [scope, me?.userCode]);
+  }, [scope, initialDraftKey, me?.userCode]);
 
   useEffect(() => {
     if (!me || draftReady !== scope) return;
-    void saveChatDraft({ key: scope, userCode: me.userCode, text, attachments: atts, editing,
+    void saveChatDraft({ key: draftKey, userCode: me.userCode, text, attachments: atts, editing,
       conversationId: conversationId.current, transcript: dictationTranscript || undefined })
-      .catch(() => setAttErr(tr('草稿暂时无法保存，请保持对话打开。')));
-  }, [scope, draftReady, text, atts, editing, dictationTranscript, me?.userCode]);
+      .catch(() => {
+        if (mounted.current && activeScope.current === scope && activeUser.current === me.userCode) {
+          setAttErr(tr('草稿暂时无法保存，请保持对话打开。'));
+        }
+      });
+  }, [scope, draftKey, draftReady, text, atts, editing, dictationTranscript, me?.userCode]);
 
   // Observe durable receipts, including uploads performed by an already-running flush.
   useEffect(() => {
@@ -465,7 +478,7 @@ export const ChatSheet = ({
     setOutboxNotes([]);
     const localConversation = conversationId.current;
     const subscription = liveQuery(() => db.notes.where('recordedBy').equals(me.userCode)
-      .filter((n) => Boolean(n.toAgent) && (threadId ? n.threadId === threadId : n.clientThreadId === localConversation))
+      .filter((n) => Boolean(n.toAgent) && (n.clientThreadId === localConversation || Boolean(threadId && n.threadId === threadId)))
       .toArray()).subscribe({ next: (notes) => {
         if (!alive || activeScope.current !== scope) return;
         setOutboxNotes(notes);
@@ -475,9 +488,22 @@ export const ChatSheet = ({
         }
         if (!threadId) {
           const assigned = notes.find((n) => n.clientThreadId === localConversation && n.threadId);
-          if (assigned?.threadId) {
-            void deleteChatDraft(scope);
-            setThreadId(assigned.threadId);
+          if (assigned?.threadId && !threadAdoption.current) {
+            const adoption = {};
+            const assignedId = assigned.threadId;
+            threadAdoption.current = adoption;
+            void moveChatDraft({ fromKey: draftKey, toKey: chatDraftKey(me.userCode, assignedId),
+              userCode: me.userCode, conversationId: localConversation }).then(() => {
+              if (mounted.current && activeScope.current === scope && activeUser.current === me.userCode &&
+                conversationId.current === localConversation && threadAdoption.current === adoption) {
+                setThreadId(assignedId);
+              }
+            }).catch(() => {
+              if (mounted.current && activeScope.current === scope && activeUser.current === me.userCode) {
+                setAttErr(tr('草稿暂时无法保存，请保持对话打开。'));
+              }
+              if (threadAdoption.current === adoption) threadAdoption.current = null;
+            });
           }
         }
       }, error: () => { if (alive) setAttErr(tr('无法读取待传消息，请保持对话打开。')); } });
@@ -489,10 +515,10 @@ export const ChatSheet = ({
       }, 300);
     });
     return () => { alive = false; subscription.unsubscribe(); unsub(); window.clearTimeout(historyRefresh); };
-  }, [scope, draftReady, threadId, me?.userCode]);
+  }, [scope, draftKey, draftReady, threadId, me?.userCode]);
 
   const entries = useMemo(() => projectMessages(messagesScope === scope ? messages : [], outboxNotes.filter((note) =>
-    note.recordedBy === me?.userCode && (threadId ? note.threadId === threadId : note.clientThreadId === conversationId.current))),
+    note.recordedBy === me?.userCode && (note.clientThreadId === conversationId.current || (threadId && note.threadId === threadId)))),
     [messages, messagesScope, scope, outboxNotes, threadId, me?.userCode, draftReady]);
   const businessCards = new Map<string, string>();
   for (const entry of entries) {
@@ -610,11 +636,18 @@ export const ChatSheet = ({
     }
     if (sendingRef.current || previewRef.current || rewrite) return;
     if (draftReady !== scope || !me) return;
-    void saveChatDraft({ key: scope, userCode: me.userCode, text, attachments: atts, editing,
+    void saveChatDraft({ key: draftKey, userCode: me.userCode, text, attachments: atts, editing,
       conversationId: conversationId.current, transcript: dictationTranscript || undefined }).then(() => {
+      if (!mounted.current || activeScope.current !== scope || activeUser.current !== me.userCode) return;
       setClosing(true);
-      window.setTimeout(onClose, 190);
-    }).catch(() => setAttErr(tr('草稿暂时无法保存，请保持对话打开。')));
+      window.setTimeout(() => {
+        if (mounted.current && activeScope.current === scope && activeUser.current === me.userCode) onClose();
+      }, 190);
+    }).catch(() => {
+      if (mounted.current && activeScope.current === scope && activeUser.current === me.userCode) {
+        setAttErr(tr('草稿暂时无法保存，请保持对话打开。'));
+      }
+    });
   };
 
   const closeHistory = () => {
@@ -634,6 +667,8 @@ export const ChatSheet = ({
     }
     if (sendingRef.current || previewRef.current || rewrite) return;
     setMessages([]); setOutboxNotes([]); setMenu(null); setHover(null);
+    threadAdoption.current = null;
+    setConversationView((current) => ({ threadId: id, serial: current.serial + 1 }));
     setThreadId(id);
     setWaiting(false);
     setStopping(false);
@@ -820,23 +855,11 @@ export const ChatSheet = ({
     setSending(true);
     const intentScope = scope;
     const clientThreadId = conversationId.current;
+    const sentComposerRevision = composerRevision.current;
+    const isCurrentIntent = () => mounted.current && activeScope.current === intentScope &&
+      activeUser.current === me.userCode && conversationId.current === clientThreadId;
     try {
-
-    /**
-     * 🔴 **先把对话建出来，再发。**
-     *
-     * 之前是「发出去，等回执告诉我 threadId」—— 而人在等不到反应时会连按几下，
-     * 那几下每一下都带着 null 发出去，服务端就每次新开一条。
-     * 2026-08-03 实测：一句话开了 5 条对话、跑了 5 轮模型。
-     *
-     * 建对话是一次很小的请求；离线时它返回 null，退回旧路径（由服务端建），
-     * 那种情况下人也看不到 agent 回复，不会连按。
-     */
-    let tid = threadId;
-    if (!tid) {
-      tid = await createThread(body || tr('语音'), clientThreadId);
-    }
-
+    // 先耐久入队，再上传。服务端按 clientThreadId 认领线程，不需要先等网络建会话。
     const noteId = crypto.randomUUID();
     await db.notes.add({
       id: noteId,
@@ -846,7 +869,7 @@ export const ChatSheet = ({
       visitLabel: CURRENT_VISIT,
       sync: 'queued',
       attempts: 0,
-      threadId: tid ?? undefined,
+      threadId: threadId ?? undefined,
       clientThreadId,
       // 从 AI 这一屏发出去的才走 agent（D31：速记页不自动跑）
       toAgent: true,
@@ -867,28 +890,28 @@ export const ChatSheet = ({
       ...(said ? { transcript: said } : {}),
       ...extra,
     });
-    setPendingAudio(null);
-    setDictationTranscript('');
-
-    setText('');
-    setAtts([]);
-    setAttErr('');
-    setEditing(null); // 改口那一轮到此结束（D90）—— 下一句又是普通续写
-    waitingForClient.current = noteId;
-    setWaiting(true);
-
-    if (tid && !threadId) {
-      await deleteChatDraft(intentScope);
-      setThreadId(tid);
+    if (isCurrentIntent()) {
+      // IndexedDB 也可能慢；只移除本次快照，等待期间的新输入和附件仍是下一条草稿。
+      setPendingAudio((current) => current === pendingAudio ? null : current);
+      setDictationTranscript((current) => current === dictationTranscript ? '' : current);
+      if ((overrideText === undefined || body === text.trim()) && composerRevision.current === sentComposerRevision) {
+        setText((current) => current === text ? '' : current);
+        setEditing((current) => current === editing ? null : current);
+      }
+      setAtts((current) => current.filter((attachment) => !atts.includes(attachment)));
+      setAttErr('');
+      waitingForClient.current = noteId;
+      setWaiting(true);
     }
-
-    await flush();
-    if (activeScope.current === intentScope) void syncThreads().then(setThreads);
+    // 上传台账和回执订阅负责后续状态；弱网队列不占用编辑、关闭或下一次发送的锁。
+    void flush().catch((error) => {
+      if (isCurrentIntent()) setAttErr(error instanceof Error ? error.message : String(error));
+    });
     } catch (error) {
-      if (activeScope.current === intentScope) setAttErr(error instanceof Error ? error.message : String(error));
+      if (isCurrentIntent()) setAttErr(error instanceof Error ? error.message : String(error));
     } finally {
       sendingRef.current = false;
-      setSending(false);
+      if (mounted.current) setSending(false);
     }
   };
 
@@ -1578,7 +1601,7 @@ export const ChatSheet = ({
        *
        * 上限取 820 —— 比 ChatGPT 的 768 略宽一点，因为核对卡里有「标签 + 值」两列。
        */}
-      {view === 'development' ? (
+      {view === 'development' && AssistantThreadView ? (
         <ChatViewBoundary fallback={currentView} onFallback={() => setView('current')}>
           <Suspense fallback={<div role="status" style={{ padding: 18 }}>{tr('正在加载开发测试版…')}</div>}>
             <AssistantThreadView key={scope} entries={entries} running={live}
@@ -1951,7 +1974,7 @@ export const ChatSheet = ({
           <textarea
             ref={composer}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => { composerRevision.current += 1; setText(e.target.value); }}
             placeholder={
               rec
                 ? tr('录音中 {a}s…', { a: seconds })

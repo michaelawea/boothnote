@@ -5,6 +5,8 @@ No production services are contacted. This is contract/E2E testing, not Twenty
 product validation. A command receives safe local fixture environment variables.
 Example: python3 scripts/test-isolated-agent.py
 Custom: python3 scripts/test-isolated-agent.py -- node --test PATH
+The default suite gives each test file its own complete stack: resetting the fake
+CRM must not retain a previous file's gateway/customer cache or database rows.
 Each run migrates a new database. --hold keeps the supervisor alive for manual
 fixture/browser checks until SIGINT/SIGTERM. Connection selectors contain only
 fixture placeholders and are written into the run's unique /tmp log directory.
@@ -47,6 +49,44 @@ def until(call, seconds=45):
     raise RuntimeError("Local fixture did not become ready: " + str(last))
 
 
+def default_suite(root, state_file):
+    files = ["agent-flows.e2e.test.ts", "item-recovery.e2e.test.ts", "agent-disposition.e2e.test.ts"]
+    active = None
+    failures = []
+    previous_handlers = {}
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt()
+    for sig in [signal.SIGINT, signal.SIGTERM]:
+        previous_handlers[sig] = signal.signal(sig, interrupted)
+    try:
+        for name in files:
+            command = [sys.executable, str(Path(__file__).resolve()), "--repo", str(root)]
+            if state_file:
+                command += ["--state-file", state_file]
+            command += ["--", "node", "--test", "services/gateway/src/__tests__/" + name]
+            print(json.dumps({"suite": name, "freshStack": True, "realTwenty": False}), flush=True)
+            active = subprocess.Popen(command, start_new_session=True)
+            code = active.wait()
+            if code:
+                failures.append({"suite": name, "exitCode": code})
+        print(json.dumps({"isolatedSuites": len(files), "failures": failures}), flush=True)
+        return 1 if failures else 0
+    except KeyboardInterrupt:
+        return 130
+    finally:
+        if active and active.poll() is None:
+            try:
+                os.killpg(active.pid, signal.SIGTERM)
+                active.wait(timeout=30)
+            except ProcessLookupError:
+                pass
+            except subprocess.TimeoutExpired:
+                os.killpg(active.pid, signal.SIGKILL)
+                active.wait(timeout=5)
+        for sig, previous in previous_handlers.items():
+            signal.signal(sig, previous)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", default=str(Path(__file__).resolve().parent.parent))
@@ -55,11 +95,11 @@ def main():
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
-    if not command and not args.hold:
-        command = ["node", "--test", "services/gateway/src/__tests__/agent-flows.e2e.test.ts"]
     root = Path(args.repo)
     if not (root / "services/gateway/src/index.ts").exists():
         raise RuntimeError("Not an Boothnote Map gateway repository")
+    if not command and not args.hold:
+        return default_suite(root, args.state_file)
     run_dir = Path(tempfile.mkdtemp(prefix="boothnote-fixture-stack-", dir="/tmp"))
     state_file = Path(args.state_file) if args.state_file else run_dir / "state.json"
     cid = "boothnote-fixture-" + str(os.getpid())
@@ -70,7 +110,7 @@ def main():
         "GATEWAY_PORT": str(gw_port), "GATEWAY_URL": f"http://127.0.0.1:{gw_port}",
         "SERVER_URL": f"http://127.0.0.1:{twenty_port}", "TWENTY_API_KEY": "local-fixture-only",
         "GATEWAY_JWT_SECRET": "local-fixture-only", "OPENAI_API_KEY": "local-fixture-only",
-        "OPENAI_BASE_URL": "http://127.0.0.1:9/v1", "AGENT_ENABLED": "0",
+        "OPENAI_BASE_URL": "http://127.0.0.1:9/v1", "AGENT_ENABLED": "0", "AGENT_MULTI_ITEMS": "1",
         "TRANSCRIBE_SELFTEST": "0", "GATEWAY_AUDIO_DIR": str(run_dir / "audio"),
         "ADMIN_TOKEN": "local-fixture-only", "CHANNEL_DINGTALK_SECRET": "local-fixture-only",
         "CHANNEL_LAB_SECRET": "local-fixture-only", "PORTAL_SECRET": "local-fixture-only",
@@ -137,7 +177,7 @@ def main():
         until(gateway_ready)
         selectors = {name: env[name] for name in ["APP_DATABASE_URL", "GATEWAY_URL", "GATEWAY_PORT", "SERVER_URL", "FIXTURE_TWENTY_URL",
                                                 "TWENTY_API_KEY", "GATEWAY_JWT_SECRET", "OPENAI_API_KEY", "OPENAI_BASE_URL", "GATEWAY_AUDIO_DIR",
-                                                "AGENT_ENABLED", "ADMIN_TOKEN", "PORTAL_SECRET", "CONFIRM_DELAY_MS"]}
+                                                "AGENT_ENABLED", "AGENT_MULTI_ITEMS", "ADMIN_TOKEN", "PORTAL_SECRET", "CONFIRM_DELAY_MS"]}
         state_file.write_text(json.dumps({"fixture": True, "realTwenty": False, "container": cid,
                                                    "logs": str(run_dir), "env": selectors}, indent=2))
         print(json.dumps({"ready": True, "fixture": True, "realTwenty": False, "stateFile": str(state_file),

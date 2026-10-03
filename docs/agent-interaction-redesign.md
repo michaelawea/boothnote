@@ -74,3 +74,11 @@ build and pass packaging checks. TypeScript, i18n and schema checks pass; 39
 real-service integration cases remain skipped. Actual model behavior, production
 Twenty behavior, Safari and physical-device microphone input are not validated
 by these fixtures. No production migration or deployment was performed.
+
+## 2026-10-03 合并后修复与下一阶段边界
+
+上述验收数对应 PR #67 的初次实现，不能证明未覆盖的弱网边界或真实服务行为。后续复核确认发送等待 flush 和离线认领丢草稿、多事项问题落库失败、开关未透传、unknown 缺少核对入口等缺陷，本轮逐一修复并加回归。
+
+多事项工具默认 `AGENT_MULTI_ITEMS=0`；启用需显式配置，已有事项仍可使用。实际 HTTP 写入前保存请求证据；核对只接受服务器对同一目标和请求的读回验证，未知创建无可信身份仍需人工处理，不自动重试。
+
+当前 assistant-ui 仅替换消息容器。完整替换方案见 [assistant-ui-evaluation.md](assistant-ui-evaluation.md)：采用 ExternalStoreRuntime，复用唯一网关/Dexie 状态，下一阶段接管 Composer、附件、消息操作和会话列表。业务核对与 D108 改口保持原契约。

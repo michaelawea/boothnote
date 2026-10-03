@@ -1,7 +1,7 @@
 import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { containsExplicitTargetIdentifier, createAgentQuestion, proposalFingerprint, QuestionError, resolveQuestionOption } from '../questions.ts';
+import { containsExplicitTargetIdentifier, createAgentQuestion, reconcilePendingQuestionItems, proposalFingerprint, QuestionError, resolveQuestionOption } from '../questions.ts';
 import { candidateText, readCandidatePages, readCrmCandidates, registerCandidates, toTargetCandidate } from '../targetCandidates.ts';
 import { sql } from '../db.ts';
 import type { QuestionSnapshot, TargetCandidate } from '../../../../shared/agent-questions.mjs';
@@ -140,6 +140,33 @@ describe('问题选项的确定性目标身份', () => {
     const question = createAgentQuestion(multi, { ...input, itemId: items[1]!.itemId });
     assert.equal(question.itemId, items[1]!.itemId);
     assert.equal(question.revisionId, items[1]!.revisionId);
+  });
+
+  it('旧提案处置必须提供准确旧草稿continue与create；普通问话或另一旧草稿不能绕过', () => {
+    const legacyId = randomUUID();
+    const ctx = { ...context(), inheritedLegacyStagingId: legacyId };
+    const candidate: TargetCandidate = { handle: randomUUID(), target: { type: 'staging', id: legacyId,
+      companyId: COMPANY, action: 'continue' }, label: '准确旧事项', description: '原始故障' };
+    const sibling: TargetCandidate = { ...candidate, handle: randomUUID(), target: { ...candidate.target, id: randomUUID() } };
+    registerCandidates(ctx, [{ status: 'ok', candidates: [candidate, sibling] }]);
+    assert.throws(() => createAgentQuestion(ctx, { question: '哪一季度？', options: ['Q1', 'Q2'] }), /先提供明确旧草稿/);
+    assert.throws(() => createAgentQuestion(ctx, { question: '继续？', targetOptions: [
+      { label: '另一草稿', candidateHandle: sibling.handle }, { label: '独立新事项', action: 'create' },
+    ] }), /先提供明确旧草稿/);
+    const question = createAgentQuestion(ctx, { question: '继续准确旧草稿还是独立新事项？', targetOptions: [
+      { label: '继续准确旧草稿', candidateHandle: candidate.handle }, { label: '独立新事项', action: 'create' },
+    ] });
+    assert.equal(question.purpose, 'legacy_disposition');
+    assert.equal(question.legacyStagingId, legacyId);
+  });
+
+  it('后续修订使已问问题版本失效时撤出待发问题，不偷偷绑定新版或其它项', () => {
+    const itemId = randomUUID();
+    const ctx = { ...context(), proposedItems: [{ itemId, revisionId: 'revision-1', companyId: COMPANY }] };
+    createAgentQuestion(ctx, { question: '今天还是昨天？', options: ['今天', '昨天'], itemId });
+    ctx.proposedItems = [{ itemId, revisionId: 'revision-2', companyId: COMPANY }];
+    assert.match(reconcilePendingQuestionItems(ctx)[0]!, /question_stale/);
+    assert.equal(ctx.questions.length, 0);
   });
 
   it('第二个/就这个只解析携带questionId的那道问题，不按全thread最新问题猜目标', () => {

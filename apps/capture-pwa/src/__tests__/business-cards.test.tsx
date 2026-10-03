@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({ locale: 'zh', confirm: vi.fn(), cancel: vi.fn(
 vi.mock('../auth', () => ({ getSession: () => ({ user: { locale: state.locale } }) }));
 vi.mock('../api', () => ({
   confirmProposalItems: state.confirm, cancelProposalItem: state.cancel, withdrawProposalItem: state.withdraw,
+  inspectItemRecovery: vi.fn(), reconcileItemRecovery: vi.fn(),
   cachedEnums: async () => null, syncEnums: async () => null,
 }));
 vi.mock('../companies', () => ({ useCompanies: () => [
@@ -180,7 +181,9 @@ describe('independent proposal items card', () => {
     expect(container.querySelector<HTMLInputElement>('[data-proposal-item="done"] input')!.disabled).toBe(true);
     expect(container.querySelector<HTMLInputElement>('[data-proposal-item="failed"] input')!.disabled).toBe(false);
     expect(container.querySelector<HTMLInputElement>('[data-proposal-item="uncertain"] input')!.disabled).toBe(true);
-    expect(container.querySelectorAll('[data-proposal-item="uncertain"] button')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-proposal-item="uncertain"] button')).toHaveLength(1);
+    expect(button('核对写入结果')).toBeDefined();
+    expect(state.confirm).not.toHaveBeenCalled();
   });
 
   it('cancels one exact revision without cancelling other queued items', async () => {

@@ -205,8 +205,11 @@ export const validateTargetBinding = async (
   if (!row || row.deletedAt) throw new TargetValidationError('target_not_found', 404, '目标不存在或已删除。');
   if (ownCompany(row) !== expectedCompanyId) throw new TargetValidationError('target_company_mismatch', 422, '目标属于另一客户。');
   const actualStatus = String(row.caseStatus ?? row.projectStage ?? row.itemStatus ?? '');
-  if (target.status && target.status !== actualStatus) throw new TargetValidationError('target_changed', 409, '目标状态已变化，请重新核对。');
-  if (target.updatedAt && row.updatedAt && target.updatedAt !== String(row.updatedAt)) throw new TargetValidationError('target_changed', 409, '目标内容已变化，请重新核对。');
+  if (target.action !== 'append' && target.status && target.status !== actualStatus) throw new TargetValidationError('target_changed', 409, '目标状态已变化，请重新核对。');
+  // An append re-reads the current record under the target lock. Another append
+  // changing updatedAt must not invalidate its identity; replacements still
+  // require the original version. Customer, state, code and parent checks remain.
+  if (target.action !== 'append' && target.updatedAt && row.updatedAt && target.updatedAt !== String(row.updatedAt)) throw new TargetValidationError('target_changed', 409, '目标内容已变化，请重新核对。');
   if (target.type === 'supportCase' && closed.has(actualStatus.toUpperCase())) throw new TargetValidationError('target_closed', 409, '这条售后已结束，不能静默追加或重新打开。');
   if (target.code && String(row.projectCode ?? row.itemCode ?? '').trim() !== target.code) throw new TargetValidationError('target_changed', 409, '目标编号已变化。');
   if (target.projectId && (row.projectId ?? row.project?.id) !== target.projectId) throw new TargetValidationError('target_changed', 409, '任务所属项目已变化。');

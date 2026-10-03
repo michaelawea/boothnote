@@ -9,6 +9,9 @@ COPY apps/capture-pwa/ ./
 COPY shared /shared
 # 前端与网关同源（/api），所以这里不需要注入绝对地址
 ENV VITE_GATEWAY_URL=/api
+# 构建期关掉测试界面时，连对应的懒加载包也不生成。
+ARG VITE_ASSISTANT_UI_ENABLED=1
+ENV VITE_ASSISTANT_UI_ENABLED=$VITE_ASSISTANT_UI_ENABLED
 RUN npm run build
 
 FROM caddy:2-alpine

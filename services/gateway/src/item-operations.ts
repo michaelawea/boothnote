@@ -1,4 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { isDefiniteTwentyRejection } from './twenty-errors.ts';
+import type postgres from 'postgres';
 
 export type ItemOperationState = 'planned' | 'running' | 'succeeded' | 'failed' | 'unknown';
 export type ItemOperation = {
@@ -11,7 +14,10 @@ export type ItemOperation = {
   result: unknown;
   error: string | null;
   attempt_id: string | null;
+  request_evidence?: ItemMutationRequest[];
+  input_reset?: unknown;
 };
+export type ItemMutationRequest = { method: string; path: string; body: unknown };
 export type ItemOperationResolution =
   | { outcome: 'succeeded'; result: unknown }
   | { outcome: 'not_applied' };
@@ -23,6 +29,8 @@ export interface ItemOperationStore {
   claim(id: string, hash: string, at: Date, attemptId: string): Promise<boolean>;
   succeed(id: string, result: unknown, at: Date, attemptId: string): Promise<boolean>;
   fail(id: string, state: 'failed' | 'unknown', error: string, at: Date, attemptId: string): Promise<boolean>;
+  recordRequest?(id: string, request: ItemMutationRequest, at: Date, attemptId: string): Promise<boolean>;
+  bindResetInput?(id: string, previousHash: string, hash: string, input: unknown, at: Date): Promise<boolean>;
   markInterrupted(at: Date): Promise<number>;
   resolve(revisionId: string, role: string, resolution: ItemOperationResolution, actorId: string, at: Date): Promise<boolean>;
 }
@@ -102,6 +110,82 @@ export class DefiniteItemOperationError extends Error {
 const briefError = (error: unknown): string =>
   (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 500);
 
+const mutationContext = new AsyncLocalStorage<{
+  operation: ItemOperation; attemptId: string; store: ItemOperationStore;
+  now: () => Date; requests: Set<string>;
+}>();
+
+export const isDurableItemMutation = (method: string): boolean =>
+  !!mutationContext.getStore() && ['POST', 'PATCH', 'PUT', 'DELETE'].includes(method);
+
+/** Dynamic targetId belongs to a step; the acknowledged payload belongs to its revision. */
+export const itemOperationResetInput = (input: unknown): unknown => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new TypeError('Invalid item operation payload');
+  const value = input as Record<string, unknown>;
+  return JSON.parse(canonicalItemOperationInput({ companyId: value['companyId'], fields: value['fields'], target: value['target'] ?? null }));
+};
+
+/** Queue holds the current revision lock. This must run before any new mutation. */
+export const resetUnappliedItemOperations = async (
+  revisionId: string, input: unknown, actorId: string, tx: postgres.TransactionSql,
+): Promise<boolean> => {
+  const reset = itemOperationResetInput(input);
+  const [guard] = await tx<Array<{ safe: boolean }>>`select (
+    exists(select 1 from proposal_revision r join proposal_item i on i.id = r.item_id
+      where r.id = ${revisionId} and r.revision = i.current_revision and i.user_id = ${actorId}
+        and r.status in ('ready','failed'))
+    and
+    not exists(select 1 from item_operation where revision_id = ${revisionId} and state in ('succeeded','running','unknown'))
+    and not exists(select 1 from proposal_revision cur join proposal_revision history on history.item_id = cur.item_id
+      join item_operation previous on previous.revision_id = history.id
+      where cur.id = ${revisionId} and history.status <> 'confirmed'
+        and previous.state in ('succeeded','running','unknown'))
+    and not exists(select 1 from item_record_link l join proposal_revision r on r.item_id = l.item_id
+      where r.id = ${revisionId} and l.created_here and not exists(
+        select 1 from proposal_revision history where history.item_id = r.item_id and history.status = 'confirmed'))
+  ) as safe`;
+  if (!guard?.safe) return false;
+  const operations = await tx<ItemOperation[]>`select id, input_hash, input, state, error, attempt_id, request_evidence, input_reset
+    from item_operation where revision_id = ${revisionId} and state in ('planned','failed') for update`;
+  for (const operation of operations) {
+    if (operation.input_reset == null && hashItemOperationInput(itemOperationResetInput(operation.input)) === hashItemOperationInput(reset)) continue;
+    if (operation.input_reset != null && hashItemOperationInput(operation.input_reset) === hashItemOperationInput(reset)) continue;
+    const audit = { actorId, at: new Date().toISOString(), outcome: 'unapplied_input_reset',
+      previousState: operation.state, previousInputHash: operation.input_hash, previousInput: operation.input,
+      previousReset: operation.input_reset ?? null,
+      previousError: operation.error, previousAttemptId: operation.attempt_id,
+      previousRequests: operation.request_evidence ?? [], resetPayloadHash: hashItemOperationInput(reset) };
+    await tx`update item_operation set state = 'planned', input_reset = ${tx.json(reset as never)},
+      request_evidence = '[]'::jsonb, attempt_id = null, audit = audit || ${tx.json([audit] as never)}, updated_at = now()
+      where id = ${operation.id} and state in ('planned','failed')`;
+  }
+  return true;
+};
+
+/** The Twenty client calls this before fetch; no credentials are recorded. */
+export const recordItemMutationRequest = async (request: ItemMutationRequest): Promise<void> => {
+  const context = mutationContext.getStore();
+  if (!context || !['POST', 'PATCH', 'PUT', 'DELETE'].includes(request.method)) return;
+  const frozen = JSON.parse(canonicalItemOperationInput(request)) as ItemMutationRequest;
+  const key = canonicalItemOperationInput(frozen);
+  if (context.requests.has(key)) {
+    throw new Error('One item operation attempted to repeat its CRM mutation; review the first request before continuing');
+  }
+  if (context.requests.size) {
+    // One journal role must describe one mutation. A second different request
+    // cannot be called definitely-not-applied after the first was sent.
+    throw new Error('One item operation attempted multiple distinct CRM mutations; review the first request before continuing');
+  }
+  try {
+    if (!context.store.recordRequest || !await context.store.recordRequest(
+      context.operation.id, frozen, context.now(), context.attemptId,
+    )) throw new Error('Operation request was not recorded');
+  } catch (cause) {
+    throw new DefiniteItemOperationError('CRM 请求尚未发出：执行台账未能保存请求，请稍后重试。', { cause });
+  }
+  context.requests.add(key);
+};
+
 /** Loaded lazily so injected-store unit tests do not need database configuration. */
 export const postgresItemOperationStore: ItemOperationStore = {
   async getOrCreate(revisionId, role, hash, input, at) {
@@ -110,7 +194,7 @@ export const postgresItemOperationStore: ItemOperationStore = {
       insert into item_operation (id, revision_id, role, input_hash, input, state, created_at, updated_at)
       values (${randomUUID()}, ${revisionId}, ${role}, ${hash}, ${sql.json(input as never)}, 'planned', ${at}, ${at})
       on conflict (revision_id, role) do nothing
-      returning id, revision_id, role, input_hash, input, state, result, error, attempt_id`;
+      returning id, revision_id, role, input_hash, input, state, result, error, attempt_id, request_evidence, input_reset`;
     const operation = inserted ?? await this.get(revisionId, role);
     if (!operation) throw new Error('Item operation disappeared after creation');
     return operation;
@@ -118,15 +202,15 @@ export const postgresItemOperationStore: ItemOperationStore = {
   async get(revisionId, role) {
     const { sql } = await import('./db.ts');
     const [row] = await sql<ItemOperation[]>`
-      select id, revision_id, role, input_hash, input, state, result, error, attempt_id
+      select id, revision_id, role, input_hash, input, state, result, error, attempt_id, request_evidence, input_reset
       from item_operation where revision_id = ${revisionId} and role = ${role}`;
     return row ?? null;
   },
   async claim(id, hash, at, attemptId) {
     const { sql } = await import('./db.ts');
     const rows = await sql`
-      update item_operation set state = 'running', updated_at = ${at}, attempt_id = ${attemptId}
-      where id = ${id} and input_hash = ${hash} and state in ('planned', 'failed') returning id`;
+      update item_operation set state = 'running', updated_at = ${at}, attempt_id = ${attemptId}, request_evidence = '[]'::jsonb
+      where id = ${id} and input_hash = ${hash} and input_reset is null and state in ('planned', 'failed') returning id`;
     return rows.length > 0;
   },
   async succeed(id, result, at, attemptId) {
@@ -141,6 +225,23 @@ export const postgresItemOperationStore: ItemOperationStore = {
     const rows = await sql`
       update item_operation set state = ${state}, error = ${error}, updated_at = ${at}
       where id = ${id} and state = 'running' and attempt_id = ${attemptId} returning id`;
+    return rows.length > 0;
+  },
+  async recordRequest(id, request, at, attemptId) {
+    const { sql } = await import('./db.ts');
+    const rows = await sql`
+      update item_operation set request_evidence = request_evidence || ${sql.json([request] as never)}, updated_at = ${at}
+      where id = ${id} and state = 'running' and attempt_id = ${attemptId} returning id`;
+    return rows.length > 0;
+  },
+  async bindResetInput(id, previousHash, hash, input, at) {
+    const { sql } = await import('./db.ts');
+    const rows = await sql`update item_operation o set input_hash = ${hash}, input = ${sql.json(input as never)},
+      input_reset = null, state = 'planned', error = null, updated_at = ${at}
+      from proposal_revision r join proposal_item i on i.id = r.item_id
+      where o.id = ${id} and o.revision_id = r.id and r.revision = i.current_revision
+        and r.status = 'committing' and o.state in ('planned','failed') and o.input_hash = ${previousHash}
+        and o.input_reset = ${sql.json(itemOperationResetInput(input) as never)} returning o.id`;
     return rows.length > 0;
   },
   async markInterrupted(at) {
@@ -189,7 +290,13 @@ export const durableItemOperation = async <T>(
   const now = options.now ?? (() => new Date());
   const canonical = canonicalItemOperationInput(input);
   const hash = createHash('sha256').update(canonical).digest('hex');
-  const operation = await store.getOrCreate(revisionId, role, hash, JSON.parse(canonical), now());
+  let operation = await store.getOrCreate(revisionId, role, hash, JSON.parse(canonical), now());
+  if (operation.input_reset != null) {
+    if (!store.bindResetInput || !await store.bindResetInput(operation.id, operation.input_hash, hash, JSON.parse(canonical), now())) {
+      throw new ItemOperationConflictError();
+    }
+    operation = await store.get(revisionId, role) ?? operation;
+  }
   if (operation.input_hash !== hash) throw new ItemOperationConflictError();
   if (operation.state === 'succeeded') return operation.result as T;
   if (operation.state === 'running' || operation.state === 'unknown') throw new UnknownItemOperationError(operation);
@@ -202,9 +309,9 @@ export const durableItemOperation = async <T>(
 
   let result: T;
   try {
-    result = await execute();
+    result = await mutationContext.run({ operation, attemptId, store, now, requests: new Set() }, execute);
   } catch (error) {
-    const definite = error instanceof DefiniteItemOperationError;
+    const definite = error instanceof DefiniteItemOperationError || isDefiniteTwentyRejection(error);
     try {
       const recorded = await store.fail(operation.id, definite ? 'failed' : 'unknown', briefError(error), now(), attemptId);
       if (!recorded) throw new UnknownItemOperationError(operation, error);

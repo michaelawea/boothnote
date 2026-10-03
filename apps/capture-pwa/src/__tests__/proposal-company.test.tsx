@@ -10,6 +10,7 @@ vi.mock('../companies', () => ({ useCompanies: () => [] }));
 vi.mock('../api', () => ({
   cachedEnums: async () => null, syncEnums: async () => null,
   confirmProposalItems: state.confirm, cancelProposalItem: vi.fn(), withdrawProposalItem: vi.fn(),
+  inspectItemRecovery: vi.fn(), reconcileItemRecovery: vi.fn(),
   createCompany: state.create, searchCompanies: state.search,
   DuplicateError: class extends Error { constructor(public candidates: unknown[]) { super('possible_duplicate'); } },
 }));

@@ -1,6 +1,7 @@
 import { env } from './env.ts';
 import { sql } from './db.ts';
-import { DefiniteItemOperationError } from './item-operations.ts';
+import { DefiniteItemOperationError, isDurableItemMutation, recordItemMutationRequest } from './item-operations.ts';
+import { TwentyHttpError } from './twenty-errors.ts';
 import { companyCountry, normalizeCountry } from '../../../shared/countries.mjs';
 import {
   portalProjectBody,
@@ -42,6 +43,7 @@ const call = async (
    */
   timeoutMs?: number,
 ): Promise<any> => {
+  await recordItemMutationRequest({ method, path, body });
   const res = await fetch(`${env.twentyUrl}${path}`, {
     method,
     headers: { Authorization: `Bearer ${env.twentyKey}`, 'Content-Type': 'application/json' },
@@ -50,7 +52,7 @@ const call = async (
   });
 
   // 0.5s → 1s → 2s → 4s → 8s，最多 5 次。限流窗口通常一秒级，够用了。
-  if (res.status === 429 && attempt < 5) {
+  if (res.status === 429 && attempt < 5 && !isDurableItemMutation(method)) {
     await sleep(500 * 2 ** attempt);
     return call(method, path, body, attempt + 1, timeoutMs);
   }
@@ -62,7 +64,7 @@ const call = async (
   } catch {
     json = { raw: text };
   }
-  if (!res.ok) throw new Error(`Twenty ${method} ${path} → ${res.status} ${text.slice(0, 300)}`);
+  if (!res.ok) throw new TwentyHttpError(method, path, res.status, json, text);
   return json;
 };
 

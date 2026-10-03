@@ -13,6 +13,8 @@ type QuestionContext = {
   questions: QuestionSnapshot[]; targetCandidates?: Map<string, TargetCandidate>;
   itemId?: string; revisionId?: string;
   proposedItems?: Array<{ itemId: string; revisionId: string; revision?: number; companyId: string | null }>;
+  inheritedLegacyStagingId?: string;
+  questionWarnings?: string[];
 };
 export type AgentQuestionInput = {
   question: string; options?: string[];
@@ -57,6 +59,13 @@ export const createAgentQuestion = (ctx: QuestionContext, input: AgentQuestionIn
   if (ctx.proposedItems?.length && requestedItemId && !item) throw new QuestionError('question_item_invalid', 422, 'itemId不属于本轮提案，请读取已提交的事项身份。');
   if (!requestedItemId && (ctx.proposedItems?.length ?? 0) > 1) throw new QuestionError('question_item_required', 422, '多个独立事项的提问必须传itemId，不能猜第一项。');
   if (item && companyIds.size && item.companyId !== [...companyIds][0]) throw new QuestionError('target_company_mismatch', 422, '候选客户与所问事项不一致。');
+  if (ctx.inheritedLegacyStagingId && (!choices?.some((choice) => 'target' in choice && choice.target?.type === 'staging'
+    && choice.target.id === ctx.inheritedLegacyStagingId && choice.action === 'continue')
+    || !choices.some((choice) => choice.action === 'create')
+    || choices.some((choice) => choice.action !== 'create' && (!('target' in choice) || choice.target?.type !== 'staging'
+      || choice.target.id !== ctx.inheritedLegacyStagingId || choice.action !== 'continue')))) {
+    throw new QuestionError('legacy_disposition_required', 422, '本轮带有旧单条提案；先提供明确旧草稿的 continue 候选及 create 出口，让人选择继续旧事项还是独立新事项。');
+  }
   const snapshot: QuestionSnapshot = {
     questionId: randomUUID(), question, kind: companyIds.size ? 'target' : 'clarify',
     options: input.options, choices,
@@ -65,9 +74,79 @@ export const createAgentQuestion = (ctx: QuestionContext, input: AgentQuestionIn
     ...(item?.itemId ?? requestedItemId ? { itemId: item?.itemId ?? requestedItemId } : {}),
     ...(item?.revisionId ?? ctx.revisionId ? { revisionId: item?.revisionId ?? ctx.revisionId } : {}),
     companyId: companyIds.size ? [...companyIds][0]! : null,
+    ...(ctx.inheritedLegacyStagingId ? { purpose: 'legacy_disposition' as const, legacyStagingId: ctx.inheritedLegacyStagingId } : {}),
   };
   ctx.questions.push(snapshot);
   return snapshot;
+};
+
+/** 先提问后交事项也必须校验，不能等到写回复时才把整条消息回滚。 */
+export const reconcilePendingQuestionItems = (ctx: QuestionContext): string[] => {
+  const items = ctx.proposedItems ?? [];
+  if (!items.length) return [];
+  const warnings: string[] = [];
+  ctx.questions = ctx.questions.filter((question) => {
+    const item = question.itemId ? items.find((entry) => entry.itemId === question.itemId)
+      : items.length === 1 ? items[0] : undefined;
+    let code: string | undefined;
+    if (!item) code = question.itemId ? 'question_item_invalid' : 'question_item_required';
+    else if (question.companyId && question.companyId !== item.companyId) code = 'target_company_mismatch';
+    else if (question.revisionId && question.revisionId !== item.revisionId) code = 'question_stale';
+    if (code) {
+      warnings.push(`${code}: 问题「${question.question}」尚未绑定有效事项，未发送；请用返回的明确 itemId 重新调用 ask_user。`);
+      return false;
+    }
+    question.itemId = item!.itemId;
+    question.revisionId = item!.revisionId;
+    return true;
+  });
+  ctx.questionWarnings = [...(ctx.questionWarnings ?? []), ...warnings];
+  return warnings;
+};
+
+/** 已知问题校验失败只能撤销问题那一版，不能抹掉正常回复和已保存的事项。 */
+export const persistAgentReply = async (ctx: QuestionContext, input: {
+  text: string; fallbackText: string; partial: boolean;
+}, connection: postgres.TransactionSql): Promise<{ questionFailed: boolean }> => {
+  const insert = async (tx: postgres.TransactionSql, text: string, questions: QuestionSnapshot[], warning?: string) => {
+    const [message] = await tx<Array<{ id: string }>>`insert into thread_message (thread_id,role,text,inbox_id,meta)
+      values(${ctx.threadId},'agent',${text},${ctx.inboxId},${tx.json({ questions, stagingId: ctx.stagingId,
+        partial: input.partial, ...(warning ? { questionWarning: warning } : {}) } as never)}) returning id`;
+    return message!.id;
+  };
+  try {
+    await connection.savepoint(async (tx) => {
+      const id = await insert(tx, input.text, ctx.questions);
+      await persistAgentQuestions(ctx, id, tx);
+    });
+    return { questionFailed: false };
+  } catch (error) {
+    if (!(error instanceof QuestionError)) throw error;
+    const warning = '提案已保存，但这一轮的问题未能绑定有效事项。请重新整理并核对目标。';
+    await insert(connection, `${input.fallbackText}\n\n${warning}`, [], error.code);
+    ctx.questions = [];
+    return { questionFailed: true };
+  }
+};
+
+/** 恢复用户已选择的处置及问题源；普通文本/模型自报 marker 都不能解除边界。 */
+export const loadLegacyDispositionSource = async (input: { stagingId: string; userId: string; threadId: string | null }) => {
+  const [row] = await sql<Array<{ snapshot: QuestionSnapshot; option_id: string; source_inbox_id: string; text: string | null;
+    edited_text: string | null; transcript: string | null; legacy_status: string | null; legacy_successor: string | null }>>`
+    select q.snapshot,a.option_id,s.inbox_id as source_inbox_id,i.text,s.edited_text,s.transcript,
+      old.status as legacy_status,old.superseded_by as legacy_successor
+    from agent_question_answer a join agent_question q on q.id=a.question_id
+    join staging s on s.id=q.staging_id join inbox i on i.id=s.inbox_id
+    left join staging old on old.id=(q.snapshot->>'legacyStagingId')::uuid
+    where a.staging_id=${input.stagingId} and a.user_id=${input.userId} and q.user_id=${input.userId}
+      and i.user_id=${input.userId} and q.thread_id=${input.threadId} and coalesce(i.thread_id,s.thread_id)=${input.threadId}
+      and a.requires_agent and a.option_id is not null and q.snapshot->>'purpose'='legacy_disposition'`;
+  if (!row) return null;
+  const choice = row.snapshot.choices?.find((entry) => entry.optionId === row.option_id);
+  if (choice?.action !== 'create' && !(choice?.action === 'continue' && choice.target?.id === row.snapshot.legacyStagingId
+    && row.legacy_status === 'superseded' && row.legacy_successor === input.stagingId)) return null;
+  return { action: choice.action, inboxId: row.source_inbox_id, legacyStagingId: row.snapshot.legacyStagingId,
+    text: String(row.edited_text ?? (row.text?.trim() ? row.text : row.transcript) ?? '') };
 };
 
 /** Match whole identifiers so PRJ-12 cannot accidentally bind a reference to PRJ-123. */
@@ -130,6 +209,9 @@ export const persistAgentQuestions = async (ctx: QuestionContext, sourceMessageI
   if (!message) throw new QuestionError('question_source_invalid', 422, '问题来源消息必须属于当前录入人的对话。');
   const durable: QuestionSnapshot[] = [];
   for (const draft of ctx.questions) {
+    if (draft.purpose === 'legacy_disposition' && draft.legacyStagingId !== ctx.inheritedLegacyStagingId) {
+      throw new QuestionError('legacy_disposition_invalid', 422, '旧草稿处置必须来自本轮服务端的明确来源。');
+    }
     // Resolve one-item calls automatically; multiple-item calls must identify the specific item.
     const revisions = await connection.unsafe<Array<{ item_id: string; id: string }>>(
       `select r.item_id,r.id from proposal_revision r join proposal_item p on p.id=r.item_id
@@ -238,11 +320,15 @@ export const answerQuestion = async (input: {
     // A foreign or already-used inbox clientId must not be silently treated as this answer.
     const [used] = await tx`select id from inbox where client_id=${input.clientId}`;
     if (used) throw new QuestionError('answer_client_conflict', 409, '客户端标识已用于另一条原文。');
+    const disposition = question.purpose === 'legacy_disposition';
     const note = await ingestNote({ userId: input.userId, clientId: input.clientId, text,
-      companyCode: source.fields?.companyCode ?? null, visitLabel: null, deviceCreatedAt: null,
+      companyCode: disposition && selected?.action === 'create' ? null : source.fields?.companyCode ?? null, visitLabel: null, deviceCreatedAt: null,
       threadId: input.threadId, toAgent: true, source: 'followup' }, tx);
-    const requiresAgent = !selected || selected.action === 'clarify';
-    let fields = { ...source.fields, answeredQuestionId: question.questionId, answerToQuestion: { stagingId: question.stagingId, itemId: question.itemId, revisionId: question.revisionId } };
+    const requiresAgent = disposition || !selected || selected.action === 'clarify';
+    const answerToQuestion = { stagingId: question.stagingId, itemId: question.itemId, revisionId: question.revisionId,
+      action: selected?.action ?? 'clarify', ...(disposition ? { purpose: question.purpose, legacyStagingId: question.legacyStagingId } : {}) };
+    let fields = { ...source.fields, answeredQuestionId: question.questionId, answerToQuestion };
+    delete fields.legacyDispositionRequired;
     if (target?.type === 'staging' && !target.itemId) {
       const [basis] = await tx<Array<{ extracted: any; status: string }>>`
         select s.extracted,s.status from staging s join inbox i on i.id=s.inbox_id
@@ -281,6 +367,10 @@ export const answerQuestion = async (input: {
       if (fields.project) fields.project = { ...fields.project, projectCode: '' };
       if (fields.workItems) fields.workItems = fields.workItems.map((item: any) => { const { itemCode: _code, ...fresh } = item; return fresh; });
     }
+    if (disposition && selected?.action === 'create') {
+      // 独立新事项不继承旧客户或旧业务字段。问题来源原话/附件仍在 immutable inbox 中。
+      fields = { answeredQuestionId: question.questionId, answerToQuestion };
+    }
     if (target?.type === 'project') fields.project = { ...(fields.project ?? {}), projectCode: target.code, name: fields.project?.name ?? selected?.label };
     if (target?.type === 'workItem') {
       const matching = fields.workItems?.find((item: any) => item.itemCode === target.code);
@@ -288,7 +378,7 @@ export const answerQuestion = async (input: {
       const item = matching ?? fields.workItems?.[0] ?? { body: fields.details };
       fields.workItems = [{ ...item, itemCode: target.code, title: item.title ?? selected?.label }];
     }
-    await tx`update staging set extracted=${tx.json(fields as never)}, resolved_company_id=${question.companyId ?? null},
+    await tx`update staging set extracted=${tx.json(fields as never)}, resolved_company_id=${disposition && selected?.action === 'create' ? null : question.companyId ?? null},
       status=${requiresAgent ? 'pending' : 'ready'} where id=${note.stagingId}`;
     const revisionItemId = question.itemId ?? target?.itemId;
     if (revisionItemId) {
@@ -297,7 +387,7 @@ export const answerQuestion = async (input: {
     }
     if (!question.itemId) {
       await tx`update staging set status='superseded',superseded_by=${note.stagingId}
-        where id=${question.stagingId!} and status in ('ready','failed')`;
+        where id=${question.stagingId!} and (status in ('ready','failed') or (${disposition} and status='extracting'))`;
     }
     if (!requiresAgent) {
       const [user] = await tx<Array<{ locale: string }>>`select locale from app_user where id=${input.userId}`;

@@ -156,17 +156,48 @@ echo "  ── 🛡  数据守卫（第一道：**紧跟 provision，早于任�
 guard "Twenty 对象与字段"
 
 echo
+echo "  ── 国家迁移预览（只读；此时旧网关仍在线）──"
+nrun scripts/migrate-company-countries.mjs || {
+  echo "  🔴 国家迁移预览失败，尚未停止网关。修正后重跑完整部署。"; exit 1; }
+
+# 只在数据库迁移、provision 和数据守卫已经通过后调用。
+# 即使国家回填未完成，新版本也只写受控列，不能回退启动旧国家写入版本。
+start_prepared_gateway() {
+  docker compose --profile prod up -d --no-deps --force-recreate gateway caddy || return 1
+  for attempt in $(seq 1 15); do
+    if docker compose --profile prod exec -T gateway node --input-type=module -e \
+      'const response = await fetch("http://127.0.0.1:4000/health", { signal: AbortSignal.timeout(3000) }); if (!response.ok || !(await response.json()).ok) process.exit(1);' \
+      >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 2
+  done
+  return 1
+}
+
+echo
 echo "  ── 暂停旧网关，避免回填期间继续写旧国家列 ──"
 docker compose --profile prod stop gateway
 
 echo
 echo "  ── 客户国家受控化（保留旧字段，回填后停用旧输入）──"
-nrun scripts/migrate-company-countries.mjs --apply || {
-  echo "  🔴 国家迁移失败，网关保持停止。修正后重跑完整部署；不要启动只写旧国家列的版本。"; exit 1; }
+migration_rc=0
+nrun scripts/migrate-company-countries.mjs --apply || migration_rc=$?
+if [ "$migration_rc" -ne 0 ]; then
+  echo "  🔴 国家迁移未完成。保留历史文本和已核对的回填；尝试恢复 schema 已准备的新网关。"
+  if start_prepared_gateway; then
+    echo "  ⚠️  新网关健康检查通过，服务已恢复；未回填客户暂显示未选国家。"
+    echo "     本次部署仍为失败：处理异常清单后重跑，期间暂停 CRM 国家编辑。"
+  else
+    echo "  🔴 新网关恢复失败。检查 gateway 日志与单写入者租约；不要启动写旧列的旧版本。"
+  fi
+  exit "$migration_rc"
+fi
 
 echo
 echo "  ── 换上新网关 + 入口（数据库与 CRM 字段已就绪）──"
-docker compose --profile prod up -d gateway caddy
+start_prepared_gateway || {
+  echo "  🔴 新网关启动或健康检查失败。检查 gateway 日志与单写入者租约。"; exit 1; }
 
 echo
 echo "  ── 清掉 Twenty 自带的示例数据（幂等）──"

@@ -30,6 +30,9 @@ export type QuestionSnapshot = {
   questionId: string;
   question: string;
   kind: 'clarify' | 'target';
+  /** A server-created boundary question distinguishes a pending legacy draft from a new matter. */
+  purpose?: 'legacy_disposition';
+  legacyStagingId?: string;
   /** Legacy text-only options remain displayable, without asserting a target binding. */
   options?: string[];
   choices?: QuestionOption[];

@@ -154,6 +154,8 @@ services:
       BOARD_URL: ${BOARD_URL:-}
       CRM_DOMAIN: ${CRM_DOMAIN:-}
       AGENT_ENABLED: ${AGENT_ENABLED:-1}
+      # 多事项先灰度；显式 =1 才注册新工具，已有事项仍可核对。
+      AGENT_MULTI_ITEMS: ${AGENT_MULTI_ITEMS:-0}
       AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-8}
       # 2026-08-05 60s → 120s（T51）；2026-08-17 → 180s：开了思考每轮更慢（D125）
       AGENT_TIMEOUT_MS: ${AGENT_TIMEOUT_MS:-180000}
@@ -245,6 +247,9 @@ services:
     build:
       context: .
       dockerfile: infra/caddy/Dockerfile
+      args:
+        # =0 时不打入/预缓存测试版库；=1 只开放设置，现行界面仍为默认。
+        VITE_ASSISTANT_UI_ENABLED: ${VITE_ASSISTANT_UI_ENABLED:-1}
     environment:
       CAPTURE_DOMAIN: ${CAPTURE_DOMAIN}
       CRM_DOMAIN: ${CRM_DOMAIN}

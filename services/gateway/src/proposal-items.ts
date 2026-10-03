@@ -4,7 +4,7 @@ import { sql } from './db.ts';
 import { env } from './env.ts';
 import { listCompanies, readTwentyRecord, type RecordRef, type TwentyRecordType } from './twenty.ts';
 import { validateTargetBinding } from './targetCandidates.ts';
-import { hashItemOperationInput, markInterruptedItemOperationsUnknown } from './item-operations.ts';
+import { hashItemOperationInput, markInterruptedItemOperationsUnknown, resetUnappliedItemOperations } from './item-operations.ts';
 import { sanitizeItemFields, summaryProposalItems, ProposalItemError, validateItemTarget,
   type ProposalItemView, type ItemSelection, type ItemTarget, type EvidenceRef, type ItemStatus } from './proposal-model.ts';
 
@@ -106,8 +106,9 @@ const validateEvidence = async (tx: Tx, refs: EvidenceRef[], input: ProposeRecor
       inboxId = a.inbox_id;
     }
     if (!inboxId) throw new ProposalItemError('missing_evidence_source', 422);
-    const [source] = await tx`select id from inbox where id=${inboxId} and user_id=${input.userId}
-      and (id=${input.inboxId} or thread_id=${input.threadId})`;
+    const [source] = await tx`select source.id from inbox source left join staging derived on derived.inbox_id = source.id
+      where source.id = ${inboxId} and source.user_id = ${input.userId}
+        and (source.id = ${input.inboxId} or coalesce(source.thread_id, derived.thread_id) = ${input.threadId})`;
     if (!source) throw new ProposalItemError('invalid_evidence_source', 422);
   }
 };
@@ -120,7 +121,9 @@ export const proposeRecords = async (input: ProposeRecordsInput, transaction?: T
   const perform = async (tx: Tx) => {
     const [batch] = await tx`select s.id from staging s join inbox i on i.id=s.inbox_id
       where s.id=${input.stagingId} and i.id=${input.inboxId} and i.user_id=${input.userId}
-      and (i.thread_id=${input.threadId} or (i.thread_id is null and ${input.threadId}::uuid is null)) for update of s`;
+      and coalesce(i.thread_id, s.thread_id) is not distinct from ${input.threadId}::uuid
+      and (${input.threadId}::uuid is null or exists(select 1 from thread t
+        where t.id = ${input.threadId} and t.user_id = ${input.userId})) for update of s`;
     if (!batch) throw new ProposalItemError('proposal_batch_not_found', 404);
     const results: ProposalItemView[] = [];
     const priorBatches=new Set<string>();
@@ -307,6 +310,9 @@ export const queueProposalItems = async (stagingId: string, userId: string, sele
         throw new ProposalItemError('partial_item_changes_require_reconciliation',422,
           '这一版已部分写入；恢复时必须保留原客户、目标和字段。请先恢复原版本，再创建更正版。');
       }
+      if (!partialWrites && !await resetUnappliedItemOperations(r.id, { companyId, fields: { ...r.fields, ...fieldEdits }, target }, userId, tx)) {
+        throw new ProposalItemError('partial_item_changes_require_reconciliation', 422);
+      }
       await tx`update proposal_revision set status='confirming',confirm_after=${at},confirm_payload=${tx.json(payload as never)},
         confirm_by=${userId},company_id=${companyId},company_code=${companies.find((c) => c.id===companyId)?.code ?? null},
         target=${tx.json(target as never)},action=${action},error=null,updated_at=now() where id=${r.id}`;
@@ -488,14 +494,4 @@ export const itemDeletionPlan = async (itemId: string, userId: string): Promise<
     else refs.push(r);
   }
   return { refs, skipped };
-};
-
-export const reconcileItemOperationResult = async (object: 'visit'|'supportCase'|'productFitment'|'project'|'workItem'|'projectDoc', id: string, companyId: string) => {
-  if (object === 'supportCase' || object === 'project' || object === 'workItem') {
-    const record = await readTwentyRecord(object, id);
-    if (!record) throw new ProposalItemError('reconciliation_record_not_found', 404);
-    if (record.companyId && record.companyId !== companyId) throw new ProposalItemError('reconciliation_company_mismatch', 422);
-    return id;
-  }
-  throw new ProposalItemError('reconciliation_requires_read_adapter', 422);
 };

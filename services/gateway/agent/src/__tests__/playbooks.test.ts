@@ -117,12 +117,16 @@ describe('用血换来的判据一条没丢', () => {
   });
 
   it('多事项prompt要求实际提案，并保住单项项目义务和完整多事项字段', () => {
+    const previous=Object.getOwnPropertyDescriptor(env,'agentMultiItems')!;
+    try {
+      Object.defineProperty(env,'agentMultiItems',{...previous,value:true});
     const p = systemPrompt(ctx());
     assert.match(p, /必须至少调一次 `propose_fields` 或 `propose_records`/);
     assert.match(p, /project 或 followup 时，这一轮必须再调一次 `propose_project`/);
     assert.match(p, /project\/workItems\/docs 完整写在 propose_records 的 fields/);
     assert.match(p, /propose_records 已经保存多事项后，不再用 propose_fields/);
     assert.match(p, /绝对不要输出任何自然人姓名/);
+    } finally { Object.defineProperty(env,'agentMultiItems',previous); }
   });
 
   it('渠道和停用开关保住单项提案义务，推送/拉取手册不要求未注册的多事项工具', async () => {

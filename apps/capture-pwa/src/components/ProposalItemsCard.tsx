@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
-import { cachedEnums, cancelProposalItem, confirmProposalItems, syncEnums, withdrawProposalItem } from '../api';
+import { cachedEnums, cancelProposalItem, confirmProposalItems, inspectItemRecovery,
+  reconcileItemRecovery, syncEnums, withdrawProposalItem, type ItemRecovery } from '../api';
 import { useCompanies } from '../companies';
 import type { EnumSet } from '../db';
 import { t } from '../i18n';
@@ -50,6 +51,119 @@ const FieldValue = ({ name, value, enums }: { name: string; value: unknown; enum
   const options = key ? enums?.[key] : undefined;
   const label = Array.isArray(options) ? options.find((entry) => entry.value === String(value))?.label : undefined;
   return <>{label ?? (typeof value === 'boolean' ? t(value ? '是' : '否') : fieldText(value))}</>;
+};
+
+const RECOVERY_VERDICTS = {
+  verified: '已核实', needs_manual_review: '需要人工处理', lookup_failed: '读取失败',
+};
+const RECOVERY_REASONS: Record<string, string> = {
+  operation_not_unknown: '这一步已不处于结果不明状态，请刷新核对。',
+  create_identity_unproven: '新建请求没有可唯一核实的 CRM 记录身份，需要人工核对。',
+  request_evidence_unavailable: '缺少完整的写入请求证据，无法自动核实。',
+  request_target_unproven: '无法证明请求对应的记录和客户，需要人工核对。',
+  crm_read_failed: '暂时无法读取 CRM，请稍后重新核对。',
+  record_missing_or_deleted: '目标记录不存在或已删除，需要人工核对。',
+  record_company_changed: '目标记录所属客户已变化，需要人工核对。',
+  append_evidence_unavailable: '缺少追加内容的读回证据，需要人工核对。',
+  append_marker_or_content_unproven: '没有核实到本次追加的标记和内容，需要人工核对。',
+  request_postcondition_changed: 'CRM 当前字段与请求预期不一致，需要人工核对。',
+  append_marker_and_content_verified: '已核实这次追加的标记、内容和其他写入字段。',
+  request_postcondition_verified: '已核实 CRM 字段符合本次写入预期。',
+};
+
+/** Mounted under the exact item/revision key, so late replies cannot cross proposal versions. */
+const ItemRecoveryPanel = ({ itemId, revision, onDone }: {
+  itemId: string; revision: number; onDone?: () => void;
+}) => {
+  const [result, setResult] = useState<ItemRecovery | null>(null);
+  const [applied, setApplied] = useState(false);
+  const [phase, setPhase] = useState<'inspect' | 'save' | null>(null);
+  const [error, setError] = useState('');
+  const scope = `${itemId}:${revision}`;
+  const liveScope = useRef(scope);
+  liveScope.current = scope;
+  const mounted = useRef(false);
+  const lock = useRef(false);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; request.current?.abort(); };
+  }, []);
+
+  const reconcile = async (save: boolean) => {
+    if (lock.current) return;
+    lock.current = true;
+    setPhase(save ? 'save' : 'inspect');
+    setError('');
+    const requestedScope = scope;
+    const controller = new AbortController();
+    request.current = controller;
+    const stillCurrent = () => mounted.current && liveScope.current === requestedScope && !controller.signal.aborted;
+    try {
+      const response = await (save ? reconcileItemRecovery : inspectItemRecovery)(itemId, revision, controller.signal);
+      if (!stillCurrent()) return;
+      if (response.itemId !== itemId || response.revision !== revision) {
+        throw new Error(t('事项版本或状态已变化，请刷新后重新核对。'));
+      }
+      setResult(response);
+      setApplied(save);
+      if (save || response.recovered) onDone?.();
+    } catch (cause) {
+      if (!stillCurrent()) return;
+      setError(cause instanceof Error ? cause.message : t('写入结果核对失败，请稍后重试。'));
+      if (save) onDone?.();
+    } finally {
+      if (stillCurrent()) { lock.current = false; request.current = null; setPhase(null); }
+    }
+  };
+
+  const verified = result?.operations.filter((operation) => operation.verdict === 'verified').length ?? 0;
+  const manual = result?.operations.filter((operation) => operation.verdict === 'needs_manual_review').length ?? 0;
+  const failed = result?.operations.filter((operation) => operation.verdict === 'lookup_failed').length ?? 0;
+  const canSave = result && !result.recovered && result.operations.some((operation) =>
+    operation.verdict === 'verified' && operation.state === 'unknown');
+  return (
+    <div data-item-recovery={scope} style={{ padding: '9px 10px', borderRadius: 9, background: T.amberSoft,
+      fontSize: 12, lineHeight: 1.65, marginBottom: 8 }}>
+      <p style={{ margin: '0 0 8px' }}>{t('只读取 CRM 证据。保存核对后，恢复的事项需要你再次确认入库。')}</p>
+      <button type="button" className="btn ghost sm" disabled={phase !== null}
+        onClick={() => void reconcile(false)}>{phase === 'inspect' ? t('正在核对…') : t('核对写入结果')}</button>
+      {result && <div>
+        <div role="status" style={{ marginTop: 8 }}>
+          {t('已核实 {a} · 需人工处理 {b} · 读取失败 {c}', { a: verified, b: manual, c: failed })}
+          {result.recovered && <div>{t('已恢复为待确认，请刷新后重新选择并确认此事项。')}</div>}
+          {applied && !result.recovered && result.resolvedCount !== undefined &&
+            <div>{t('本次已保存 {a} 个步骤的核对结果。', { a: result.resolvedCount })}</div>}
+          {result.manualReviewRequired && <div>{t('仍有步骤需要人工核对，事项继续暂停写入。')}</div>}
+          {!result.operations.length && <div>{t('没有足够的写入证据，需要人工核对。')}</div>}
+        </div>
+        <ol style={{ paddingLeft: 19, margin: '9px 0' }}>
+          {result.operations.map((operation) => <li key={operation.operationId} data-recovery-operation={operation.operationId}
+            style={{ marginBottom: 9, overflowWrap: 'anywhere' }}>
+            <b>{t(RECOVERY_VERDICTS[operation.verdict])}</b>
+            {operation.recordId && <span>{' · '}{operation.recordId}</span>}
+            <div>{t(RECOVERY_REASONS[operation.reason] ?? '无法自动核实这一步，请人工核对。')}</div>
+            <details>
+              <summary>{t('查看请求与读回证据')}</summary>
+              <div style={{ color: T.textSoft }}>{t('写入步骤：{a}', { a: operation.role })}</div>
+              {operation.checkedAt && <div style={{ color: T.textSoft }}>{t('核对时间：{a}', { a: operation.checkedAt })}</div>}
+              <div>{t('预期写入')}</div>
+              {operation.expected === undefined ? <div>{t('没有完整的写入请求证据。')}</div> : <pre style={{ margin: '4px 0 7px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {JSON.stringify(operation.expected ?? null, null, 2)}
+              </pre>}
+              <div>{t('CRM 读回')}</div>
+              {operation.observed === undefined ? <div>{t('没有可用的 CRM 读回证据。')}</div> : <pre style={{ margin: '4px 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+                {JSON.stringify(operation.observed ?? null, null, 2)}
+              </pre>}
+            </details>
+          </li>)}
+        </ol>
+        {canSave && <button type="button" className="btn ghost sm" disabled={phase !== null}
+          onClick={() => void reconcile(true)}>{phase === 'save' ? t('正在保存核对…') : t('保存核对结果')}</button>}
+      </div>}
+      {error && <div role="alert" style={{ color: T.red, marginTop: 7 }}>{error}</div>}
+    </div>
+  );
 };
 
 /** Each independent matter retains its own company, revision, confirmation and receipt. */
@@ -263,9 +377,7 @@ export const ProposalItemsCard = ({ stagingId, items, onDone }: {
                       </div>}
                     </div>)}
                   </details>}
-                  {item.status === 'unknown' && <div style={{ fontSize: 12, color: T.amber, lineHeight: 1.65 }}>
-                    {t('先核对 CRM 中是否已写入，再解决结果不明状态。')}
-                  </div>}
+                  {item.status === 'unknown' && <ItemRecoveryPanel key={key} itemId={item.itemId} revision={item.revision} onDone={onDone} />}
                   {item.status === 'ready' && !awaiting && !awaitingWithdraw && <button type="button" className="btn ghost sm"
                     disabled={busy} onClick={() => void withdraw(item)}>{t('撤回这版提案')}</button>}
                   {item.error && <div role="alert" style={{ fontSize: 12, color: T.red, whiteSpace: 'pre-wrap' }}>{item.error}</div>}

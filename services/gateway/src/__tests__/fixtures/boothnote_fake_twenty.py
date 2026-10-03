@@ -5,6 +5,9 @@ Run: python3 services/gateway/src/__tests__/fixtures/boothnote_fake_twenty.py --
 POST /__fixture/reset {"tables": {"companies": [{...}]}} seeds isolated data.
 POST /__fixture/fail {"method":"PATCH", "path":"/rest/supportCases/ID",
   "status":503, "times":1, "delayMs":0} injects deterministic transport failure.
+Optional response:{"statusCode":400,"messages":["Request rejected"]} models an
+explicit application rejection. responseText:"<html>...</html>" with
+contentType:"text/html" models an untrusted proxy error instead.
 Set dropAfterWrite:true to apply a write and lose its response. Set after:1 to
 allow one matching request before injecting the failure. Neither mode establishes
 real Twenty idempotency/schema behavior; unknown write outcomes must stay unknown.
@@ -96,7 +99,7 @@ class Handler(BaseHTTPRequestHandler):
         count = int(self.headers.get("Content-Length", "0"))
         return json.loads(self.rfile.read(count)) if count else {}
 
-    def respond(self, status, payload):
+    def respond(self, status, payload, content_type="application/json", raw=False):
         if hasattr(self, "audit_event"):
             with LOCK:
                 self.audit_event.setdefault("status", status)
@@ -108,9 +111,9 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.shutdown(socket.SHUT_RDWR)
             self.connection.close()
             return
-        encoded = json.dumps(payload, ensure_ascii=False).encode()
+        encoded = payload.encode() if raw else json.dumps(payload, ensure_ascii=False).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -161,6 +164,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(400, {"error": "Invalid failure counter"})
             if not body.get("dropAfterWrite") and (not isinstance(body.get("status", 503), int) or not 400 <= body.get("status", 503) <= 599):
                 return self.respond(400, {"error": "Failure status must be 4xx/5xx"})
+            if "responseText" in body and (not isinstance(body["responseText"], str) or "response" in body):
+                return self.respond(400, {"error": "Invalid raw failure response"})
+            if body.get("contentType", "application/json") not in ["application/json", "text/html", "text/plain"]:
+                return self.respond(400, {"error": "Unsupported failure content type"})
             with LOCK:
                 FAILURES.append({"method": "POST", "status": 503, "times": 1, **body})
             return self.respond(200, {"ok": True, "fixture": True})
@@ -188,7 +195,9 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(failure.get("delayMs", 0) / 1000)
             if failure.get("status", 0) and not failure.get("dropAfterWrite"):
                 event["status"] = failure["status"]
-                return self.respond(failure["status"], {"error": "Injected fixture failure", "fixture": True})
+                if "responseText" in failure:
+                    return self.respond(failure["status"], failure["responseText"], failure.get("contentType", "text/plain"), raw=True)
+                return self.respond(failure["status"], failure.get("response", {"error": "Injected fixture failure", "fixture": True}))
 
         if path == "/rest/metadata/objects" and method == "GET":
             objects = [{"id": str(uuid.uuid5(uuid.NAMESPACE_URL, name)), "nameSingular": name, "namePlural": plural, "fields": []}

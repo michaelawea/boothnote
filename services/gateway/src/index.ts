@@ -93,6 +93,7 @@ import { acquireCommitWorkerLease } from './commitWorkerLease.ts';
 import { hasProposalItems, listProposalItems, queueProposalItems, cancelProposalItem,
   summaryProposalItems, refreshProposalBatch, recoverInterruptedProposalItems,
   ProposalItemError, type ItemSelection } from './proposal-items.ts';
+import { inspectItemRecovery, reconcileItemRecovery } from './item-reconciliation.ts';
 import {
   registerChannels,
   registerLabChannel,
@@ -493,7 +494,8 @@ app.post('/threads/:id/questions/:questionId/answers', { preHandler: requireAuth
     return reply.code(result.duplicate ? 200 : 201).send(result);
   } catch (error) {
     if (error instanceof QuestionError || error instanceof TargetValidationError || error instanceof ProposalItemError)
-      return reply.code(error.status).send({ error: error.code });
+      return reply.code(error.status).send({ error: error.code,
+        ...(error instanceof ProposalItemError && error.field ? { field: error.field } : {}) });
     throw error;
   }
 });
@@ -1388,6 +1390,7 @@ const loadOwned = async (id: string, user: AppUser) => {
       id: string;
       inbox_id: string;
       status: string;
+      extracted: Record<string, unknown> | null;
       /** D93：两个面各一个时间戳。**空 = 没删过。** 见 migration 012 的文件头。 */
       note_deleted_at: string | null;
       record_deleted_at: string | null;
@@ -1396,7 +1399,7 @@ const loadOwned = async (id: string, user: AppUser) => {
     }>
   >`
     select s.id, s.inbox_id, s.status, s.note_deleted_at, s.record_deleted_at,
-           s.twenty_refs, s.created_records
+           s.twenty_refs, s.created_records, s.extracted
     from staging s join inbox i on i.id = s.inbox_id
     where s.id = ${id} and i.user_id = ${user.id}`;
   return st ?? null;
@@ -1686,6 +1689,7 @@ app.post('/staging/:id/confirm', { preHandler: requireAuth }, async (req, reply)
 
   const st = await loadOwned(id, req.user!);
   if (!st) return reply.code(404).send({ error: 'not_found' });
+  if (st.extracted?.legacyDispositionRequired) return reply.code(409).send({ error: 'legacy_disposition_required' });
   if (await hasProposalItems(st.id)) return reply.code(409).send({ error: 'multi_item_endpoint_required' });
   if (st.record_deleted_at) return reply.code(409).send(RECORD_DELETED);
   if (st.status === 'confirmed') return reply.code(200).send({ alreadyConfirmed: true });
@@ -1742,7 +1746,8 @@ app.post('/staging/:id/items/confirm', { preHandler: requireAuth }, async (req, 
     return { ...(await queueProposalItems(id, req.user!.id, items)), undoMs: env.confirmDelayMs };
   } catch (error) {
     if (error instanceof ProposalItemError || error instanceof TargetValidationError)
-      return reply.code(error.status).send({ error: error.code, message: error.message });
+      return reply.code(error.status).send({ error: error.code, message: error.message,
+        ...(error instanceof ProposalItemError && error.field ? { field: error.field } : {}) });
     throw error;
   }
 });
@@ -1764,6 +1769,40 @@ app.get('/proposal-items/:id/operations', { preHandler: requireAuth }, async (re
     from item_operation o join proposal_revision r on r.id = o.revision_id
     where r.item_id = ${id} order by r.revision, o.created_at, o.id`;
   return { operations };
+});
+
+const validItemRevision = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647;
+
+/** 核对只读取 CRM；客户端不能声明写入成功或提交替代回执。 */
+app.get('/proposal-items/:id/recovery', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const { revision: rawRevision } = req.query as { revision?: string };
+  const revision = typeof rawRevision === 'string' && /^[1-9]\d*$/.test(rawRevision) ? Number(rawRevision) : NaN;
+  if (!isUuid(id) || !validItemRevision(revision)) return reply.code(422).send({ error: 'invalid_item_selection' });
+  try {
+    return await inspectItemRecovery(id, req.user!.id, revision);
+  } catch (error) {
+    if (error instanceof ProposalItemError) return reply.code(error.status).send({ error: error.code, message: error.message });
+    throw error;
+  }
+});
+
+/** 保存有服务器证据的核对结果；恢复后仍须用户另行确认，不自动重写 CRM。 */
+app.post('/proposal-items/:id/recovery', { preHandler: requireAuth }, async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const body = req.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'revision')) {
+    return reply.code(422).send({ error: 'invalid_recovery_request' });
+  }
+  const { revision } = body as { revision?: unknown };
+  if (!isUuid(id) || !validItemRevision(revision)) return reply.code(422).send({ error: 'invalid_item_selection' });
+  try {
+    return await reconcileItemRecovery(id, req.user!.id, revision);
+  } catch (error) {
+    if (error instanceof ProposalItemError) return reply.code(error.status).send({ error: error.code, message: error.message });
+    throw error;
+  }
 });
 
 app.delete('/proposal-items/:id/confirm', { preHandler: requireAuth }, async (req, reply) => {
@@ -1891,6 +1930,10 @@ app.post('/staging/confirm-batch', { preHandler: requireAuth }, async (req, repl
     const st = await loadOwned(it.id, req.user!);
     if (!st) {
       results.push({ id: it.id, ok: false, reason: 'not_found' });
+      continue;
+    }
+    if (st.extracted?.legacyDispositionRequired) {
+      results.push({ id: it.id, ok: false, reason: 'legacy_disposition_required' });
       continue;
     }
     if (await hasProposalItems(st.id)) {

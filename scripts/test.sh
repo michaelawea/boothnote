@@ -64,6 +64,7 @@ checks() {
   #    集合与枚举 value 集合」），但在这一行出现之前它**只活在文档里，靠人记得去 grep**。
   run node scripts/check-schema-drift.mjs
   into apps/capture-pwa npm run build --silent
+  run node scripts/check-agent-ui-build.mjs
 }
 
 # ── 单元 ──────────────────────────────────────────────────────────
@@ -102,6 +103,10 @@ units() {
       src/__tests__/portalModel.test.ts
   into services/gateway node --test \
       src/__tests__/item-operations.test.ts \
+      src/__tests__/item-reconciliation.test.ts \
+      src/__tests__/twenty-errors.test.ts \
+      src/__tests__/twenty-item-http.test.ts \
+      src/__tests__/target-binding.test.ts \
       src/__tests__/proposal-model.test.ts \
       src/__tests__/proposal-item-ownership.test.ts \
       src/__tests__/questions.test.ts

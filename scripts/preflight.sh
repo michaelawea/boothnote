@@ -156,6 +156,13 @@ fi
 if val_is AGENT_CAN_CREATE_COLUMNS '1'; then
   warn "AGENT_CAN_CREATE_COLUMNS=1 —— 这条路径尚未实现，agent 仍走 IntelItem+IntelValue（见 D47）"
 fi
+if ! has AGENT_MULTI_ITEMS || val_is AGENT_MULTI_ITEMS '0'; then
+  ok "AGENT_MULTI_ITEMS 关闭（灰度默认；已有事项仍可核对）"
+elif val_is AGENT_MULTI_ITEMS '1'; then
+  warn "AGENT_MULTI_ITEMS 已开启 —— 确认这是本次灰度范围"
+else
+  bad "AGENT_MULTI_ITEMS 只能是 0 或 1"
+fi
 if val_is AGENT_ENABLED '0'; then
   warn "AGENT_ENABLED=0 —— 采集照常，但不抽字段。确认这是你要的。"
 fi

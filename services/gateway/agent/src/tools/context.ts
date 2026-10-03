@@ -1,5 +1,6 @@
 import type { Company } from '../host.ts';
 import type { QuestionSnapshot, TargetCandidate } from '../../../../../shared/agent-questions.mjs';
+import type { CompanySuggestion } from '../../../../../shared/company-suggestion.mjs';
 
 /**
  * 一轮 agent 跑动的上下文。
@@ -23,6 +24,10 @@ export type SkillContext = {
    * 结果是 `invalid input syntax for type uuid`，白白烧掉一步（2026-08-03 实测）。
    */
   attachments: Array<{ id: string; filename: string }>;
+  /** 仅服务端验证过的结构化答案来源，允许重新读原始附件。 */
+  relatedInboxIds?: string[];
+  /** 仅 durable legacy disposition 的已验证原文可自动成为事项证据。 */
+  dispositionSourceInboxId?: string;
   /** 这一轮的步数上限。写进 prompt 让它自己安排顺序，别把 propose_fields 留到最后。 */
   maxSteps: number;
   /**
@@ -55,6 +60,13 @@ export type SkillContext = {
   itemId?: string;
   revisionId?: string;
   proposedItems?: Array<{ itemId: string; revisionId: string; revision?: number; companyId: string | null }>;
+  inheritedLegacyStagingId?: string;
+  continuedLegacyStagingId?: string;
+  legacyDispositionRequired?: boolean;
+  questionWarnings?: string[];
+  /** 建议按明确公司名或事项 key 归属，不把最后一家客户借给其它事项。 */
+  companySuggestions?: Map<string, CompanySuggestion>;
+  itemCompanySuggestions?: Map<string, CompanySuggestion>;
   /** 它提议过的新客户名，只提议不建（§4.2 第3条）。 */
   suggestedCompany: string | null;
   /** 已经调用过 propose_fields 没有 —— 用来判断这一轮到底有没有产出。 */
@@ -70,4 +82,6 @@ export const newContext = (
   suggestedCompany: null,
   proposed: false,
   targetCandidates: new Map(),
+  companySuggestions: new Map(),
+  itemCompanySuggestions: new Map(),
 });

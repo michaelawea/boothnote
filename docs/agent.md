@@ -16,7 +16,7 @@
 | 框架 | [`@earendil-works/pi-agent-core`](https://github.com/earendil-works/pi) **0.83.0 锁死版本**（MIT · TypeScript） |
 | 模型 | 抽取/视觉 `gpt-5.6-luna` · 转写 `gpt-transcribe`（都在 `.env`，不写死） |
 | 上限 | **8 次工具调用 / 120 秒**（带附件 +6 步 +60 秒），超了写 `partial` 而不是失败 |
-| 工具 | **恰好 17 个**（PWA；钉钉暂不注册多事项及即时情报写入工具，快照测试守着）|
+| 工具 | **PWA 默认 15 个，显式 `AGENT_MULTI_ITEMS=1` 时最多 17 个**；钉钉不注册多事项及即时情报写入工具，快照测试守着 |
 | 附件 | **原生喂给模型**（D71）：图片 `input_image` · pdf/docx/pptx/xlsx `input_file`；超 10MB / 探测不支持才走本地解析 |
 | 打法手册 | `agent/skills/` 四本标准 SKILL.md（D72），渐进披露；**改 playbook 不发版** |
 | 多轮 | 同一条对话的消息史落 `agent-sessions/<threadId>.jsonl`，续写时恢复（D73）|
@@ -95,9 +95,9 @@ prompt 会被绕过、会被长文本冲掉、会被模型换代改变行为；�
 | 工具 | 落到哪 |
 |---|---|
 | `propose_fields` | `staging.extracted`，**服务端再白名单校验一次**（不指望它自觉）。含 `details`（长 markdown，D55）和 `chain`（结构化渠道链，D54） |
-| `propose_records` | 多事项独立身份和不可变修订；明确事项及版本才能修订，逐项确认后才写 CRM（#64） |
+| `propose_records` | 多事项独立身份和不可变修订；明确事项及版本才能修订，逐项确认后才写 CRM（#64）。保留 `chain/corrections`；字段错误按事项 key + field 返回，不静默漏掉 |
 | `ask_user` | 对话里回一句问话。**一轮最多一个** —— 展会现场每多问一句，销售就少录一条 |
-| `flag_new_company` | `staging.suggested_company`。**只提议，绝不建** |
+| `flag_new_company` | 旧单条用 `staging.suggested_company`；多事项按明确公司名或 `itemKey` 带入提示，**只提议，绝不建** |
 | `propose_intel_field` | 新的 `IntelItem` + 一条 `IntelValue`（见 §4） |
 | `propose_project` | `staging.extracted.project`。**编号唯一，同编号 = 更新**（D59） |
 | `propose_work_items` | `staging.extracted.workItems`。一次交一个数组 —— 四条线程要一起提 |

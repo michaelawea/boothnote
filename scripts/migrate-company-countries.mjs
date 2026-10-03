@@ -11,7 +11,73 @@ const list = (v) => {
   return [];
 };
 
-export async function migrateCompanyCountries(request, { apply = false } = {}) {
+const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+const transient = (error) => error?.retryable === true;
+
+/** 这里只接受 GET 和写固定值的 PATCH；PATCH 的重试由回读核对决定。 */
+export function createCountryMigrationRequest({ base, token, fetchImpl = fetch,
+  timeoutMs = 10_000, maxAttempts = 3, pause = sleep } = {}) {
+  return async (method, path, body) => {
+    if (method !== 'GET' && method !== 'PATCH') throw new Error('Unsupported country migration request');
+    for (let attempt = 0; ; attempt++) {
+      let response;
+      try {
+        response = await fetchImpl(`${base}${path}`, {
+          method, signal: AbortSignal.timeout(timeoutMs),
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+      } catch {
+        const error = Object.assign(new Error(`${method} ${path}: network/timeout; result requires verification`), { retryable: true });
+        if (method !== 'GET' || attempt + 1 >= maxAttempts) throw error;
+        await pause(500 * 2 ** attempt);
+        continue;
+      }
+      if (!response.ok) {
+        const retryable = response.status === 429 || response.status >= 500;
+        const error = Object.assign(new Error(`${method} ${path}: HTTP ${response.status}`), { status: response.status, retryable });
+        if (method !== 'GET' || !retryable || attempt + 1 >= maxAttempts) throw error;
+        await pause(500 * 2 ** attempt);
+        continue;
+      }
+      try {
+        return await response.json();
+      } catch (caught) {
+        const interrupted = caught instanceof TypeError || caught?.name === 'AbortError' || caught?.name === 'TimeoutError';
+        // 非法 JSON 是未能验证的响应，不能按瞬时网络故障重试。
+        if (!interrupted) throw caught;
+        const error = Object.assign(new Error(`${method} ${path}: response body interrupted; result requires verification`), { retryable: true });
+        if (method !== 'GET' || attempt + 1 >= maxAttempts) throw error;
+        await pause(500 * 2 ** attempt);
+      }
+    }
+  };
+}
+
+// 老 TEXT 里的 NA 常是「不适用」；受控 SELECT 的合法 NA（纳米比亚）不受这条限制。
+const legacyCountry = (value) => typeof value === 'string' && ['NA', 'N/A', 'UNKNOWN', 'NONE', '不适用', '不详'].includes(value.trim().toUpperCase())
+  ? null : normalizeCountry(value);
+
+/** 回包丢失/5xx 后先回读，只有仍是原值时才有限重试固定值写入。 */
+async function writeVerified(request, { path, body, read, expected, before, label, attempts, pause }) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    const current = await read();
+    if (current === expected) return;
+    if (current !== before) throw new Error(`${label} changed concurrently; migration stopped`);
+    let error;
+    try { await request('PATCH', path, body); }
+    catch (caught) { error = caught; }
+    // 即使 PATCH 报 4xx，也先核对实际状态。回读失败则不继续盲写。
+    const after = await read();
+    if (after === expected) return;
+    if (after !== before) throw new Error(`${label} changed concurrently; migration stopped`);
+    if (!error) throw new Error(`${label} did not persist; migration stopped`);
+    if (!transient(error) || attempt + 1 === attempts) throw error;
+    await pause(500 * 2 ** attempt);
+  }
+}
+
+export async function migrateCompanyCountries(request, { apply = false, writeAttempts = 3, pause = sleep } = {}) {
   const metadata = await request('GET', '/rest/metadata/objects');
   const company = list(metadata).find((o) => o.nameSingular === 'company');
   const fields = list(company?.fields);
@@ -45,25 +111,61 @@ export async function migrateCompanyCountries(request, { apply = false } = {}) {
       if (!COUNTRY_CODES.includes(row.hqCountryCode)) throw new Error(`Invalid controlled country on ${row.id}`);
       continue; // Never overwrite a user's selection, even if the old text differs.
     }
-    const country = normalizeCountry(row.hqCountry);
+    const country = legacyCountry(row.hqCountry);
     if (country) updates.push({ id: row.id, country });
-    else if (row.hqCountry != null && row.hqCountry !== '') invalid.push({ id: row.id, name: row.name, value: row.hqCountry });
+    else if (row.hqCountry != null && row.hqCountry !== '') invalid.push({ id: row.id, name: row.name, value: row.hqCountry, reason: 'unrecognized' });
   }
 
+  const appliedUpdates = [];
+  const skipped = [];
   if (apply) {
     for (const update of updates) {
-      await request('PATCH', `/rest/companies/${update.id}`, { hqCountryCode: update.country });
-      const check = await request('GET', `/rest/companies/${update.id}`);
-      const row = check?.data?.company ?? check?.data;
-      if (row?.hqCountryCode !== update.country) throw new Error(`Country backfill did not persist for ${update.id}; legacy field remains active`);
+      const path = `/rest/companies/${update.id}`;
+      const original = records.find((row) => row.id === update.id);
+      const readRow = async () => {
+        const check = await request('GET', path);
+        const row = check?.data?.company ?? check?.data;
+        if (!row || row.id !== update.id) throw new Error(`Invalid country readback for ${update.id}`);
+        return row;
+      };
+      const current = await readRow();
+      if (current.hqCountryCode != null && current.hqCountryCode !== '') {
+        if (!COUNTRY_CODES.includes(current.hqCountryCode)) throw new Error(`Invalid controlled country on ${update.id}`);
+        skipped.push({ id: update.id, reason: 'already_selected' });
+        continue;
+      }
+      if (current.hqCountry !== original.hqCountry) {
+        invalid.push({ id: update.id, name: current.name, value: current.hqCountry, reason: 'changed_during_migration' });
+        continue;
+      }
+      await writeVerified(request, {
+        path, body: { hqCountryCode: update.country }, expected: update.country,
+        before: current.hqCountryCode ?? null,
+        read: async () => {
+          const row = await readRow();
+          if ((row.hqCountryCode == null || row.hqCountryCode === '') && row.hqCountry !== original.hqCountry) {
+            throw new Error(`Legacy country changed concurrently for ${update.id}`);
+          }
+          return row.hqCountryCode ?? null;
+        },
+        label: `Country backfill for ${update.id}`, attempts: writeAttempts, pause,
+      });
+      appliedUpdates.push(update);
     }
     if (legacy?.isActive !== false && legacy) {
-      await request('PATCH', `/rest/metadata/fields/${legacy.id}`, { isActive: false });
-      const after = list(await request('GET', '/rest/metadata/objects')).find((o) => o.nameSingular === 'company');
-      if (list(after?.fields).find((f) => f.id === legacy.id)?.isActive !== false) throw new Error('Legacy country input was not deactivated');
+      await writeVerified(request, {
+        path: `/rest/metadata/fields/${legacy.id}`, body: { isActive: false }, expected: false,
+        before: legacy.isActive ?? true,
+        read: async () => {
+          const after = list(await request('GET', '/rest/metadata/objects')).find((o) => o.nameSingular === 'company');
+          const field = list(after?.fields).find((f) => f.id === legacy.id);
+          if (!field) throw new Error('Legacy country metadata readback is incomplete');
+          return field.isActive ?? true;
+        }, label: 'Legacy country input', attempts: writeAttempts, pause,
+      });
     }
   }
-  return { updates, invalid, applied: apply };
+  return { updates, invalid, appliedUpdates, skipped, complete: invalid.length === 0, applied: apply };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -78,24 +180,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const base = (process.env.SERVER_URL || config.SERVER_URL || 'http://localhost:3000').replace(/\/$/, '');
   const token = process.env.TWENTY_API_KEY || config.TWENTY_API_KEY;
   if (!token) { console.error('Missing TWENTY_API_KEY'); process.exit(1); }
-  const request = async (method, path, body) => {
-    for (let attempt = 0; ; attempt++) {
-      const response = await fetch(`${base}${path}`, {
-        method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        ...(body ? { body: JSON.stringify(body) } : {}),
-      });
-      if (response.status === 429 && attempt < 5) {
-        await new Promise((done) => setTimeout(done, 500 * 2 ** attempt));
-        continue;
-      }
-      if (!response.ok) throw new Error(`${method} ${path}: HTTP ${response.status}`);
-      return response.json();
-    }
-  };
+  const request = createCountryMigrationRequest({ base, token });
   try {
     const result = await migrateCompanyCountries(request, { apply: process.argv.includes('--apply') });
-    console.log(`${result.applied ? 'Applied' : 'Preview'}: ${result.updates.length} country backfills; ${result.invalid.length} legacy values need manual selection`);
-    for (const row of result.invalid) console.warn(`Country not recognized; choose in CRM: ${row.id} ${row.name} (${String(row.value)})`);
+    console.log(result.applied
+      ? `Applied: ${result.appliedUpdates.length} verified country backfills; ${result.skipped.length} new selections preserved; ${result.invalid.length} exceptions`
+      : `Preview: ${result.updates.length} country backfills; ${result.invalid.length} legacy values need manual selection`);
+    for (const row of result.invalid) console.warn(`Country needs manual selection [${row.reason}]: ${row.id} ${row.name} (${String(row.value)})`);
     console.log('Legacy values are preserved; no fields or records are deleted.');
+    if (result.applied && !result.complete) {
+      console.error('Country migration is incomplete; resolve listed exceptions in the controlled CRM field, then rerun.');
+      process.exitCode = 2;
+    }
   } catch (error) { console.error(error.message); process.exit(1); }
 }

@@ -698,6 +698,45 @@ export const withdrawProposalItem = async (itemId: string, revision: number): Pr
   if (!res.ok) await proposalItemsFailure(res);
 };
 
+export type ItemRecoveryOperation = {
+  operationId: string;
+  role: string;
+  state: string;
+  verdict: 'verified' | 'needs_manual_review' | 'lookup_failed';
+  reason: string;
+  checkedAt?: string;
+  recordType?: string;
+  recordId?: string;
+  expected?: unknown;
+  observed?: unknown;
+};
+export type ItemRecovery = {
+  itemId: string;
+  revision: number;
+  status: string;
+  recovered: boolean;
+  operations: ItemRecoveryOperation[];
+  manualReviewRequired: boolean;
+  resolvedCount?: number;
+};
+
+/** The server inspects its own journal and reads CRM evidence; no client proof is accepted. */
+export const inspectItemRecovery = async (itemId: string, revision: number, signal?: AbortSignal): Promise<ItemRecovery> => {
+  const query = new URLSearchParams({ revision: String(revision) });
+  const res = await authFetch(`/proposal-items/${itemId}/recovery?${query}`, { signal });
+  if (!res.ok) await proposalItemsFailure(res);
+  return await res.json() as ItemRecovery;
+};
+
+/** Saves only evidence reverified by the server, without issuing a CRM mutation. */
+export const reconcileItemRecovery = async (itemId: string, revision: number, signal?: AbortSignal): Promise<ItemRecovery> => {
+  const res = await authFetch(`/proposal-items/${itemId}/recovery`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision }), signal,
+  });
+  if (!res.ok) await proposalItemsFailure(res);
+  return await res.json() as ItemRecovery;
+};
+
 /**
  * 确认入库 → 网关排队，5 秒后写 Twenty。
  *

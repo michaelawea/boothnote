@@ -11,6 +11,8 @@ import {
 const summarize = (...statuses: ItemStatus[]) => summaryProposalItems(statuses.map((status) => ({ status })));
 const invalid = (run: () => unknown) => assert.throws(run,
   (error: unknown) => error instanceof ProposalItemError && error.status === 422);
+const rejectsField = (run: () => unknown, field: string, code: string) => assert.throws(run,
+  (error: unknown) => error instanceof ProposalItemError && error.status === 422 && error.field === field && error.code === code);
 
 describe('business item summary', () => {
   it('two battery faults and one inverter fault count as three items, regardless of CRM objects', () => {
@@ -86,15 +88,40 @@ describe('item field safety', () => {
   });
   it('illegal category, stage, confidence, case status and severity do not reach the writer', () => {
     for (const key of ['category', 'stage', 'sourceConfidence', 'caseStatus', 'severity']) {
-      invalid(() => sanitizeItemFields({ [key]: 'INVENTED_VALUE' }, 'support'));
+      rejectsField(() => sanitizeItemFields({ [key]: 'INVENTED_VALUE' }, 'support'), key, `invalid_${key}`);
     }
   });
-  it('unknown fields, proposed UUID relations and recordType overrides do not pass through', () => {
+  it('proposed UUID relations and recordType overrides do not pass through', () => {
     const result = sanitizeItemFields({ summary: '  原始事项  ', recordType: 'company',
       companyId: 'untrusted-company-uuid', companyCode: 'UNTRUSTED', supportCaseId: 'untrusted-case-uuid',
       projectId: 'untrusted-project-uuid', supplierId: 'untrusted-supplier-uuid', recordedById: 'untrusted-user-uuid',
-      sourceInboxId: 'untrusted-source-uuid', twentyRefs: { caseId: 'foreign-case' }, arbitrary: 'hidden-write' }, 'support');
+      sourceInboxId: 'untrusted-source-uuid', twentyRefs: { caseId: 'foreign-case' } }, 'support');
     assert.deepEqual(result, { summary: '原始事项', recordType: 'support' });
+  });
+  it('unsupported ordinary fields produce an actionable field diagnostic instead of silently dropping business facts', () => {
+    rejectsField(() => sanitizeItemFields({ summary: '需核实充电故障', warrantyClaim: '客户要求整批退货' }, 'support'),
+      'warrantyClaim', 'unknown_item_field');
+    rejectsField(() => sanitizeItemFields({ summmary: 'A typo must not become an empty proposal' }, 'fitment'),
+      'summmary', 'unknown_item_field');
+  });
+  it('question-derived revisions accept server markers without copying them into editable business fields', () => {
+    const result = sanitizeItemFields({ summary: '用户已指认原事项', companyCode: 'FIXTURE',
+      companySuggestion: { name: 'Old fictional suggestion' }, targetBinding: { id: 'untrusted-record', type: 'supportCase' },
+      answeredQuestionId: 'question-fixture', answerToQuestion: { itemId: 'item-fixture', revisionId: 'revision-fixture' },
+      agentSkipped: true, proposalVersion: 2, itemCount: 2 }, 'support');
+    assert.deepEqual(result, { recordType: 'support', summary: '用户已指认原事项' });
+  });
+  it('ordinary confirmation field edits remain valid for the multi-item card', () => {
+    assert.deepEqual(sanitizeItemFields({ category: 'BATTERY', stage: 'RFQ_QUOTE', caseStatus: 'IN_PROGRESS',
+      severity: 'HIGH', sourceConfidence: 'CONFIRMED' }, 'support'), {
+      recordType: 'support', category: 'BATTERY', stage: 'RFQ_QUOTE', caseStatus: 'IN_PROGRESS',
+      severity: 'HIGH', sourceConfidence: 'CONFIRMED',
+    });
+  });
+  it('a malformed fields container fails with a controlled diagnostic before any fields are persisted', () => {
+    for (const raw of [null, [], 'summary']) {
+      rejectsField(() => sanitizeItemFields(raw as unknown as Record<string, unknown>, 'support'), 'fields', 'invalid_item_fields');
+    }
   });
   it('affected units must be a positive integer, not a quantity invented from words', () => {
     for (const affectedUnits of [0, -1, 2.5, '18', '好几台', NaN, Infinity]) {
@@ -114,6 +141,58 @@ describe('item field safety', () => {
       assert.equal(sanitizeItemFields({ budgetEur }, 'project')['budgetEur'], undefined);
     }
     assert.equal(sanitizeItemFields({ budgetEur: 100.6 }, 'project')['budgetEur'], 101);
+  });
+});
+
+describe('multi-item channel chain and correction provenance', () => {
+  it('retains ordered channel names and roles while separating proposed names from relations', () => {
+    const fields = sanitizeItemFields({ summary: '渠道售后', chain: [
+      { name: '  Fixture Distributor  ', role: 'distributor', companyId: 'injected-distributor' },
+      { name: 'Fixture Dealer', role: 'DEALER' }, { name: 'Fixture Owner', role: 'END_USER' },
+    ] }, 'support');
+    assert.deepEqual(fields['chain'], [
+      { name: 'Fixture Distributor', role: 'DISTRIBUTOR' },
+      { name: 'Fixture Dealer', role: 'DEALER' }, { name: 'Fixture Owner', role: 'END_USER' },
+    ]);
+    assert.equal(fields['companyId'], undefined);
+  });
+  it('accepts omitted channel tiers, but rejects reversed or duplicate roles rather than removing nodes', () => {
+    assert.deepEqual(sanitizeItemFields({ chain: [
+      { name: 'Fixture Wholesaler', role: 'DISTRIBUTOR' }, { name: 'Fixture Owner', role: 'END_USER' },
+    ] }, 'fitment')['chain'], [
+      { name: 'Fixture Wholesaler', role: 'DISTRIBUTOR' }, { name: 'Fixture Owner', role: 'END_USER' },
+    ]);
+    for (const roles of [['END_USER', 'DEALER'], ['DEALER', 'DEALER']]) {
+      rejectsField(() => sanitizeItemFields({ chain: roles.map((role, index) => ({ name: `Fixture ${index}`, role })) }, 'support'),
+        'chain', 'invalid_chain_order');
+    }
+  });
+  it('identifies the invalid channel node so a model cannot mistake a partially retained chain for success', () => {
+    rejectsField(() => sanitizeItemFields({ chain: [
+      { name: 'Fixture Wholesaler', role: 'DISTRIBUTOR' }, { name: 'Fixture OEM', role: 'OEM' },
+    ] }, 'fitment'), 'chain[1].role', 'invalid_chain');
+    rejectsField(() => sanitizeItemFields({ chain: [{ name: ' ', role: 'DEALER' }] }, 'support'), 'chain[0].name', 'invalid_chain');
+    rejectsField(() => sanitizeItemFields({ chain: [null] }, 'support'), 'chain[0]', 'invalid_chain');
+    rejectsField(() => sanitizeItemFields({ chain: 'Dealer → Owner' }, 'support'), 'chain', 'invalid_chain');
+  });
+  it('keeps exact heard and corrected text as provenance without forwarding injected relationship keys', () => {
+    const corrections = [{ heard: ' Fixture Batterry ', corrected: 'Fixture Battery', companyId: 'untrusted-company' }];
+    const fields = sanitizeItemFields({ corrections, summary: '保留品牌纠正依据' }, 'support');
+    assert.deepEqual(fields['corrections'], [{ heard: ' Fixture Batterry ', corrected: 'Fixture Battery' }]);
+    assert.deepEqual(corrections, [{ heard: ' Fixture Batterry ', corrected: 'Fixture Battery', companyId: 'untrusted-company' }]);
+  });
+  it('does not coerce malformed correction provenance into invented text', () => {
+    rejectsField(() => sanitizeItemFields({ corrections: [{ heard: 123, corrected: 'Fixture' }] }, 'support'),
+      'corrections[0].heard', 'invalid_corrections');
+    rejectsField(() => sanitizeItemFields({ corrections: [{ heard: 'Fixture' }] }, 'support'),
+      'corrections[0].corrected', 'invalid_corrections');
+    rejectsField(() => sanitizeItemFields({ corrections: [null] }, 'support'), 'corrections[0]', 'invalid_corrections');
+    rejectsField(() => sanitizeItemFields({ corrections: 'Fixture → Fixed' }, 'support'), 'corrections', 'invalid_corrections');
+  });
+  it('preserves explicit empty arrays without adding a channel or correction', () => {
+    assert.deepEqual(sanitizeItemFields({ chain: [], corrections: [] }, 'support'), {
+      recordType: 'support', chain: [], corrections: [],
+    });
   });
 });
 
@@ -174,7 +253,8 @@ describe('project writer contract and source provenance', () => {
     assert.deepEqual(fields['project'], project);
   });
   it('nested project stage is validated rather than forwarded as arbitrary text', () => {
-    invalid(() => sanitizeItemFields({ project: { name: '项目', projectStage: 'INVENTED_STAGE' } }, 'project'));
+    rejectsField(() => sanitizeItemFields({ project: { name: '项目', projectStage: 'INVENTED_STAGE' } }, 'project'),
+      'project.projectStage', 'invalid_projectStage');
   });
   it('a fractional sample count is never silently rounded to an invented count', () => {
     let fields: Record<string, unknown>;

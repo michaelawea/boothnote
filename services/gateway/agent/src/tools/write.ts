@@ -2,6 +2,7 @@ import { Type } from '@earendil-works/pi-ai';
 
 import { sql, companySuggestion, createAgentQuestion, bindExplicitCandidate, hasProposalItems } from '../host.ts';
 import type { AgentQuestionInput } from '../host.ts';
+import type { CompanySuggestion } from '../host.ts';
 import { findSimilar } from '../host.ts';
 import {
   chainRank,
@@ -15,6 +16,22 @@ import {
 } from '../enums.ts';
 import type { Skill } from '../runtime.ts';
 import type { SkillContext } from './context.ts';
+
+/** 新客户建议的归属必须是同名客户或明确事项 key，不能成为整轮默认值。 */
+export const rememberCompanySuggestion = (ctx: SkillContext, suggestion: CompanySuggestion, itemKey?: string): void => {
+  (ctx.companySuggestions ??= new Map()).set(suggestion.name, suggestion);
+  if (itemKey) (ctx.itemCompanySuggestions ??= new Map()).set(itemKey, suggestion);
+};
+
+/** 继续旧草稿是补丁，省略的默认值不能盖掉原客户、台数、状态或改字留痕。 */
+export const legacyContinuationPatch = (basis: Record<string, any>, supplied: Record<string, any>, computed: Record<string, any>) => {
+  const patch = Object.fromEntries(Object.entries(computed).filter(([key]) => key === 'recordType'
+    || Object.hasOwn(supplied, key) || (key === 'demandQuantity' && Object.hasOwn(supplied, 'quantity'))));
+  if (typeof patch.details === 'string' && patch.details.trim() && typeof basis.details === 'string' && basis.details.trim()) {
+    patch.details = [...new Set([basis.details, patch.details])].join('\n\n');
+  }
+  return patch;
+};
 
 /**
  * Ring 2 —— **写提案**。落 staging，等人确认。
@@ -234,12 +251,17 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
       ),
     }),
     execute: async (p: Record<string, any>) => {
+      if (ctx.legacyDispositionRequired) {
+        return { text: 'legacy_disposition_required: 多事项与旧提案关系未明确，不能退回 propose_fields 压成一项。先 ask_user 提供准确旧草稿 continue 与独立新事项 create 出口。', details: { rejected: true } };
+      }
       if (await hasProposalItems(ctx.stagingId)) {
         return { text: '本轮已经保存独立事项，不能再压成一份字段；用逐项提案工具修订明确 itemId/版本，其余事项不变。' };
       }
       // 服务端白名单再校验一次。**不指望 agent 自觉** —— 这一层在 ai.ts 时代就有，保留。
       const codes = new Set(ctx.companies.map((c) => c.code));
-      const recordType = keepRecordTypeV2(p.recordType);
+      const [continuationBasis] = ctx.continuedLegacyStagingId ? await sql<Array<{ extracted: Record<string, any> }>>`
+        select s.extracted from staging s join inbox i on i.id=s.inbox_id where s.id=${ctx.stagingId} and i.user_id=${ctx.userId}` : [];
+      const recordType = keepRecordTypeV2(p.recordType ?? continuationBasis?.extracted?.recordType);
       /** 空串当没填。模型很爱交 `""`，而 `jsonb_strip_nulls` 只去 null。 */
       const blank = (v: unknown) => (typeof v === 'string' && !v.trim() ? null : (v ?? null));
       const fields = {
@@ -310,11 +332,12 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
        * 里面一旦出现反引号就会提前结束模板串。这个坑仓库里已经踩过三次
        * （admin-page.ts、index.ts 的 SQL 注释、这里），所以注释一律写在外面。
        */
+      const storedFields = continuationBasis ? legacyContinuationPatch(continuationBasis.extracted, p, fields) : fields;
       await sql`
         update staging set
           extracted = coalesce(extracted, '{}'::jsonb)
-                      || jsonb_strip_nulls(${sql.json(fields as never)}),
-          confidence = ${sql.json((p.confidence ?? {}) as never)},
+                      || jsonb_strip_nulls(${sql.json(storedFields as never)}),
+          confidence = ${continuationBasis ? sql`coalesce(confidence,'{}'::jsonb) || ${sql.json((p.confidence ?? {}) as never)}` : sql`${sql.json((p.confidence ?? {}) as never)}`},
           error = null
         where id = ${ctx.stagingId}`;
       ctx.proposed = true;
@@ -391,11 +414,18 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
       country_hint: Type.Optional(Type.String({ description: '如果话里提到了国家' })),
       account_type_hint: Type.Optional(Type.String({ description: '仅原文明说的客户类型，取自 list_enums 的 accountType；未说明就留空' })),
       evidence: Type.Optional(Type.String({ description: '凭哪句话判断它是客户' })),
+      itemKey: Type.Optional(Type.String({ description: '多事项时可明确指定 propose_records 的事项 key；其它项不继承这个建议。未指定时，事项必须用 suggested_company 明说同一客户名才能带入提示；sourceCompanyName只是消息来源，不代表客户。' })),
     }),
-    execute: async ({ name, country_hint, account_type_hint, evidence }: Record<string, any>) => {
+    execute: async ({ name, country_hint, account_type_hint, evidence, itemKey }: Record<string, any>) => {
       const suggestion = companySuggestion(name, { name: typeof name === 'string' ? name.trim() : '', country: country_hint, accountType: account_type_hint });
       if (!suggestion) return { text: '客户名称为空，未提议新建。', details: { rejected: true } };
       name = suggestion.name;
+      if (itemKey !== undefined && (typeof itemKey !== 'string' || !itemKey.trim() || itemKey.length > 120)) {
+        return { text: 'itemKey 必须是将要提交的明确事项 key（1–120 字）。建议未保存。', details: { rejected: true } };
+      }
+      if (itemKey && ctx.itemCompanySuggestions?.has(itemKey) && ctx.itemCompanySuggestions.get(itemKey)!.name !== name) {
+        return { text: `事项 ${itemKey} 已有另一家客户建议；请明确各事项的归属，不覆盖原建议。`, details: { rejected: true } };
+      }
       // 提议之前自己再查一遍 —— 免得它把 "Brückner" 当新客户提上来
       const hits = findSimilar(name, ctx.companies, { limit: 3 });
       if (hits.length) {
@@ -407,12 +437,14 @@ export const writeSkills = (ctx: SkillContext): Skill[] => [
         };
       }
       ctx.suggestedCompany = name;
+      rememberCompanySuggestion(ctx, suggestion, itemKey);
       // Persist the hints in the existing JSON proposal; no CRM write or schema migration.
       await sql`update staging set suggested_company = ${name},
         extracted = coalesce(extracted, '{}'::jsonb) || ${sql.json({ companySuggestion: suggestion } as never)}
         where id = ${ctx.stagingId}`;
       return {
-        text: `已提议新客户「${name}」${country_hint ? `（${country_hint}）` : ''}，等人在界面上确认。`,
+        text: `已提议新客户「${name}」${country_hint ? `（${country_hint}）` : ''}，等人在界面上确认。` +
+          (itemKey ? `多事项仅 ${itemKey} 使用此建议。` : `多事项中请在对应项 fields.suggested_company 写「${name}」；sourceCompanyName不代表客户，其它项不借用此建议。`),
         details: { name, country_hint, evidence },
       };
     },

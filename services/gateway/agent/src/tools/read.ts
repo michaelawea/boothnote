@@ -290,8 +290,9 @@ export const readSkills = (ctx: SkillContext): Skill[] => [
           mime: string | null;
         }>
       >`select t.status, t.text, t.truncated, a.filename, a.path, a.mime
-        from attachment a left join attachment_text t on t.attachment_id = a.id
-        where a.id = ${attachment_id} and a.inbox_id = ${ctx.inboxId}`;
+        from attachment a join inbox ai on ai.id=a.inbox_id left join attachment_text t on t.attachment_id = a.id
+        where ai.user_id=${ctx.userId} and a.id = ${attachment_id} and (a.inbox_id = ${ctx.inboxId}
+          or a.inbox_id = any(${ctx.relatedInboxIds ?? []}::uuid[]))`;
       // 限定 inbox_id：附件 ID 是模型给的，不能让它读到别人那条速记的附件
       if (!row) return { text: '没有这个附件（或者它不属于这条速记）。' };
 

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { sql } from './host.ts';
 import { env } from './host.ts';
-import { listCompanies, listSuppliers, listThreadItems, hasProposalItems, persistAgentQuestions } from './host.ts';
+import { listCompanies, listSuppliers, listThreadItems, hasProposalItems, persistAgentReply, reconcilePendingQuestionItems, loadLegacyDispositionSource } from './host.ts';
 import {
   markExtsUnsupported,
   prepareAttachments,
@@ -534,6 +534,10 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
   const threadItems = env.agentMultiItems && row.thread_id ? await listThreadItems(row.thread_id,row.user_id) : [];
   const [answerMarker]=await sql<Array<{answer: {itemId?:string;revisionId?:string;stagingId?:string}|null}>>`
     select extracted->'answerToQuestion' as answer from staging where id=${st.id}`;
+  // 只有耐久答案能解除旧提案处置边界；模型自报 action/purpose 不构成授权。
+  const dispositionAnswer = await loadLegacyDispositionSource({ stagingId: st.id, userId: row.user_id, threadId: row.thread_id });
+  const authorizedDisposition = dispositionAnswer?.action ?? null;
+  const dispositionSource = dispositionAnswer?.text ?? '';
   if (row.thread_id && !threadItems.length && !answerMarker?.answer?.stagingId) {
     /**
      * D147：钉钉来源接管的是一版**已入库**的（`replaces`）时，起点只能是
@@ -583,8 +587,10 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
     }
   }
 
+  const attachmentInboxId = authorizedDisposition ? dispositionAnswer!.inboxId : inboxId;
+  if (attachmentInboxId !== inboxId) prepared = await prepareAttachments(attachmentInboxId);
   const attList = await sql<Array<{ id: string; filename: string }>>`
-    select id, filename from attachment where inbox_id = ${inboxId} order by created_at`;
+    select id, filename from attachment where inbox_id = ${attachmentInboxId} order by created_at`;
 
   /**
    * 有附件就多给几步。
@@ -636,6 +642,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
   const runOnce = async (): Promise<{ ctx: SkillContext; result: RunResult }> => {
     const ctx = newContext({
       attachments: attList,
+      ...(attachmentInboxId !== inboxId ? { relatedInboxIds: [attachmentInboxId], dispositionSourceInboxId: attachmentInboxId } : {}),
       maxSteps,
       inboxId,
       stagingId: st.id,
@@ -648,16 +655,20 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
       pushPlaybooks,
       resumed: history.length > 0,
       source: row.source ?? null,
+      ...(env.agentMultiItems && row.source !== 'dingtalk' && inheritedFrom ? { inheritedLegacyStagingId: inheritedFrom } : {}),
+      ...(authorizedDisposition === 'continue' ? { continuedLegacyStagingId: dispositionAnswer!.legacyStagingId } : {}),
     });
 
     const prompt = [
-      source && `销售说的：\n${source}`,
+      (dispositionSource || source) && `销售说的：\n${dispositionSource || source}`,
       prepared.text && `随手上传的附件（已经解析成文字）：\n${prepared.text}`,
       prepared.native > 0 &&
         `另有 ${prepared.native} 个附件（图片/文档）已随本条消息**原样附上** —— 直接看内容，不用调 read_attachment。`,
       threadItems.length>0 && `本对话已有独立事项（不是整份最近提案）：\n${JSON.stringify(threadItems)}\n新增问题用propose_records创建新item；明确更正才传该itemId+expectedRevision；不猜最新/第一项。`,
       answerMarker?.answer?.itemId && `这是回答问题后对明确事项的补充：itemId=${answerMarker.answer.itemId}；只修订该事项，兄弟项保持。`,
-      answerMarker?.answer?.stagingId && !answerMarker.answer.itemId && `这是回答问题后对明确来源提案的补充：stagingId=${answerMarker.answer.stagingId}；已复制该问题的来源字段，不继承对话中其他提案。`,
+      answerMarker?.answer?.stagingId && !answerMarker.answer.itemId && !authorizedDisposition && `这是回答问题后对明确来源提案的补充：stagingId=${answerMarker.answer.stagingId}；已复制该问题的来源字段，不继承对话中其他提案。`,
+      ctx.inheritedLegacyStagingId && `本轮带有旧单条提案 ${ctx.inheritedLegacyStagingId}，它与这段新原话的关系尚未由人选择。不能猜对应关系创建多事项；检索该旧草稿后，ask_user 提供准确 continue 候选与 create 出口。`,
+      authorizedDisposition && `用户已明确选择${authorizedDisposition === 'create' ? '独立新事项；旧提案保留，不借旧客户/字段' : '继续准确旧草稿；本轮必须用 propose_fields 补丁合并，禁止 propose_records；旧草稿已在答案事务中消费，其他旧草稿保留'}。只整理这道问题对应的新原话：\n${dispositionSource}`,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -743,7 +754,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
       );
       markExtsUnsupported(prepared.nativeExts);
       await setStage(runId, '模型不收这种附件格式，退回本地解析重来');
-      prepared = await prepareAttachments(inboxId);
+      prepared = await prepareAttachments(attachmentInboxId);
       ({ ctx, result } = await runOnce());
     }
   } catch (e) {
@@ -758,6 +769,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
    * 排查 `agentHealth()` 时也被误导（issue #17-E）。status 仍是 ok
    * （这一轮本身没毛病），stop_reason 如实写 waiting_user。
    */
+  reconcilePendingQuestionItems(ctx);
   const waitingUser = result.stopReason === 'done' && ctx.questions.length > 0;
 
   /**
@@ -771,6 +783,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
    */
   const aborted = result.stopReason === 'aborted';
 
+  const waitingLegacyDisposition = !!ctx.inheritedLegacyStagingId && !ctx.proposed;
   await sql`
     update agent_run set
       status = ${result.stopReason === 'done' ? 'ok' : result.stopReason === 'error' ? 'failed' : 'partial'},
@@ -828,7 +841,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
     const [cur] = await sql<Array<{ extracted: any; transcript: string | null }>>`
       select extracted, transcript from staging where id = ${st.id}`;
     if (!hasRecordProposal(cur?.extracted)) {
-      const original = (row.text ?? cur?.transcript ?? '').trim();
+      const original = (dispositionSource || row.text || cur?.transcript || '').trim();
       const attNames = attList.map((a) => a.filename).join(' · ');
       fallback = {
         ...(cur?.extracted ?? {}),
@@ -882,14 +895,17 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
 
   await sql`
     update staging set
-      status = ${failed ? 'failed' : 'ready'},
+      status = ${waitingLegacyDisposition ? 'extracting' : failed ? 'failed' : 'ready'},
       partial = ${partial},
       agent_steps = ${result.steps},
       agent_trace = ${sql.json(result.trace as never)},
-      ${fallback ? sql`extracted = ${sql.json(fallback as never)},` : sql``}
+      ${waitingLegacyDisposition ? sql`extracted = coalesce(extracted,'{}'::jsonb) || '{"legacyDispositionRequired":true}'::jsonb,`
+        : fallback ? sql`extracted = ${sql.json(fallback as never)},` : sql``}
       error = ${
         failed
           ? (result.error ?? 'agent 失败')
+          : waitingLegacyDisposition
+            ? '旧单条提案与新原话的关系尚未确认，请选择继续旧事项或独立新事项；原提案保留。'
           : aborted
             ? '你叫停了这一轮 —— 已经整理出来的都在下面，原话一个字没丢'
             : partial
@@ -919,7 +935,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
    * 拿它取代上一轮好好的一张卡，等于人按了一下停止就把前一轮的成果按没了。
    * 真交过字段（`ctx.proposed`）的那种照常取代 —— 那是货真价实的新一版。
    */
-  if (inheritedFrom && !await hasProposalItems(st.id) && (ctx.proposed || (fallback && !aborted))) {
+  if (!waitingLegacyDisposition && inheritedFrom && !await hasProposalItems(st.id) && (ctx.proposed || (fallback && !aborted))) {
     await sql`
       update staging set status = 'superseded', superseded_by = ${st.id}
       where id = ${inheritedFrom} and status in ('ready','failed')`;
@@ -934,6 +950,12 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
      * 于是「模型没话说」会变成「这条速记永远确认不了」。
      * 宁可显示一句干巴巴的兜底，也不能让人对着自己那句话干瞪眼。
      */
+    const replyBody = result.text || (failed
+      ? '这一条没处理成功。原文还在，定个客户照样能入库。'
+      : aborted ? '你叫停了这一轮。已经整理出来的在下面，原话一个字没丢 —— 改一改再发一次就行。'
+      : '已整理，核对一下。');
+    const questionWarning = !ctx.questions.length && ctx.questionWarnings?.length
+      ? '\n\n提案已保存；尚未绑定明确事项的问题没有发送，请重新整理并核对目标。' : '';
     const say =
       [result.text, ...ctx.questions.map((q) => q.question)].filter(Boolean).join('\n') ||
       (failed
@@ -957,10 +979,7 @@ const process_ = async (inboxId: string, signal?: AbortSignal) => {
        * 只是少了一块 UI，最难发现。
        */
       await sql.begin(async(tx)=>{
-        const [message]=await tx<Array<{id:string}>>`insert into thread_message (thread_id,role,text,inbox_id,meta)
-          values(${row.thread_id},'agent',${say},${inboxId},${tx.json({questions:ctx.questions,stagingId:st.id,partial} as never)}) returning id`;
-        // GET hydrates these stable question IDs from their durable snapshots; no second reply or message UPDATE.
-        await persistAgentQuestions(ctx,message!.id,tx);
+        await persistAgentReply(ctx, { text: say + questionWarning, fallbackText: replyBody, partial }, tx);
       });
       await sql`update thread set last_message_at = now() where id = ${row.thread_id}`;
     }
@@ -1064,6 +1083,7 @@ export const resumePending = async () => {
       and thread_id is not null
       and created_at > now() - interval '24 hours'
       and attempts < ${MAX_ATTEMPTS}
+      and coalesce(extracted->>'legacyDispositionRequired','false') <> 'true'
     order by created_at limit 50`;
   for (const r of rows) push({ id: r.inbox_id, agentRun: true });
   if (rows.length) {

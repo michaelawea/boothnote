@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import 'fake-indexeddb/auto';
+import Dexie from 'dexie';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,18 +11,20 @@ const api = vi.hoisted(() => ({ fetchThread: vi.fn(), createThread: vi.fn(), syn
 const sync = vi.hoisted(() => ({ flush: vi.fn(), enqueueQuestionAnswer: vi.fn() }));
 const image = vi.hoisted(() => ({ readForUpload: vi.fn() }));
 const recorder = vi.hoisted(() => ({ startRecording: vi.fn() }));
+const identity = vi.hoisted(() => ({ userCode: 'tester' }));
 vi.mock('../api', () => api);
 vi.mock('../sync', () => ({ ...sync, onSyncChange: () => () => {}, uploadProgress: () => undefined }));
 vi.mock('../image', () => image);
 vi.mock('../recorder', () => recorder);
-vi.mock('../auth', () => ({ useSession: () => ({ user: { userCode: 'tester', locale: 'zh', role: 'staff' } }),
-  getSession: () => ({ user: { userCode: 'tester', locale: 'zh', role: 'staff' } }) }));
+vi.mock('../auth', () => ({ useSession: () => ({ user: { userCode: identity.userCode, locale: 'zh', role: 'staff' } }),
+  getSession: () => ({ user: { userCode: identity.userCode, locale: 'zh', role: 'staff' } }) }));
 vi.mock('../companies', () => ({ useCompanies: () => [] }));
 vi.mock('../components/ReviewCard', () => ({ ReviewCard: ({ stagingId }: { stagingId: string }) => <div data-review-card={stagingId}>business card</div> }));
 
 import { ChatSheet } from '../pages/Chat';
 import { db, type Note } from '../db';
 import { chatDraftDatabase, chatDraftKey, saveChatDraft } from '../chat-drafts';
+import * as chatDrafts from '../chat-drafts';
 import { localMessage } from '../message-projection';
 
 let container: HTMLDivElement;
@@ -30,8 +33,8 @@ const note = (id: string, threadId?: string): Note => ({ id, text: `text:${id}`,
   visitLabel: '', sync: 'queued', attempts: 0, toAgent: true, threadId });
 const snapshot = (messages: ThreadMessage[] = []) => ({ messages, running: null, deletedAt: null });
 const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 25)); });
-const mount = async (id: string | null = 't1', ui: 'current' | 'development' = 'current') => {
-  await act(async () => root.render(<ChatSheet initialThreadId={id} ui={ui} onClose={() => {}} />));
+const mount = async (id: string | null = 't1', ui: 'current' | 'development' = 'current', onClose = () => {}) => {
+  await act(async () => root.render(<ChatSheet initialThreadId={id} ui={ui} onClose={onClose} />));
   await settle();
 };
 const input = async (value: string) => act(async () => {
@@ -43,6 +46,7 @@ const button = (label: string) => [...document.querySelectorAll('button')].find(
 const click = (el: HTMLElement) => act(async () => el.click());
 
 beforeEach(async () => {
+  identity.userCode = 'tester';
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true);
   vi.stubGlobal('ResizeObserver', class { observe() {} disconnect() {} unobserve() {} });
   HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -71,17 +75,85 @@ describe('full chat controller race and draft regressions', () => {
     expect(document.querySelector('[data-chat-message="message:latest"] [data-review-card]')).not.toBeNull();
   });
   it.each(['current', 'development'] as const)('first-send double click persists one intent in %s view', async (ui) => {
-    let finish!: (id: string) => void;
-    api.createThread.mockImplementation(() => new Promise<string>((resolve) => { finish = resolve; }));
+    let finish!: () => void;
+    const add = db.notes.add.bind(db.notes);
+    vi.spyOn(db.notes, 'add').mockImplementation((record) => new Dexie.Promise<string>((resolve, reject) => {
+      finish = () => { void add(record).then(resolve, reject); };
+    }));
     await mount(null, ui); await input('first intent');
     const send = document.querySelector('[aria-label="发送"]') as HTMLButtonElement;
     await act(async () => { send.click(); send.click(); });
-    expect(api.createThread).toHaveBeenCalledTimes(1);
-    expect(api.createThread.mock.calls[0][1]).toMatch(/^[\da-f-]{36}$/i);
-    await act(async () => { finish('created-thread'); }); await settle();
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(sync.flush).not.toHaveBeenCalled();
+    expect(await db.notes.count()).toBe(0);
+    await act(async () => { finish(); }); await settle();
     const notes = await db.notes.toArray();
     expect(notes).toHaveLength(1); expect(notes[0].text).toBe('first intent');
-    expect(notes[0].clientThreadId).toBe(api.createThread.mock.calls[0][1]);
+    expect(notes[0].clientThreadId).toMatch(/^[\da-f-]{36}$/i);
+  });
+  it.each(['current', 'development'] as const)('can close after durable enqueue while uploads are slow in %s', async (ui) => {
+    let finish!: () => void;
+    sync.flush.mockImplementation(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const onClose = vi.fn();
+    await mount('t1', ui, onClose); await input('durable message');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    expect(await db.notes.count()).toBe(1);
+    await input('next draft');
+    await click(document.querySelector('[aria-label="关闭"]') as HTMLElement);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 230)); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect((await chatDraftDatabase.drafts.get(chatDraftKey('tester', 't1')))?.text).toBe('next draft');
+    finish();
+  });
+  it.each(['current', 'development'] as const)('can send again and switch history before a slow upload finishes in %s', async (ui) => {
+    const complete: (() => void)[] = [];
+    sync.flush.mockImplementation(() => new Promise<void>((resolve) => { complete.push(resolve); }));
+    api.syncThreads.mockResolvedValue([{ id: 't2', title: 'Second thread', last_message_at: new Date().toISOString(), messages: 0 }]);
+    await mount('t1', ui); await input('first');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    await input('second'); await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    expect((await db.notes.toArray()).map((n) => n.text).sort()).toEqual(['first', 'second']);
+    await click(button('历史')); await click([...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Second thread'))!); await settle();
+    expect(api.fetchThread).toHaveBeenCalledWith('t2');
+    await input('second thread draft');
+    await act(async () => { complete.forEach((resolve) => resolve()); }); await settle();
+    expect(document.querySelector('textarea')!.value).toBe('second thread draft');
+    expect(document.body.textContent).not.toContain('first');
+  });
+  it.each(['current', 'development'] as const)('does not await createThread and preserves input added during local enqueue in %s', async (ui) => {
+    api.createThread.mockImplementation(() => new Promise(() => {}));
+    let finish!: () => void;
+    const add = db.notes.add.bind(db.notes);
+    vi.spyOn(db.notes, 'add').mockImplementation((record) => new Dexie.Promise<string>((resolve, reject) => {
+      finish = () => { void add(record).then(resolve, reject); };
+    }));
+    await mount(null, ui); await input('first snapshot');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement);
+    await input('next input while IndexedDB commits');
+    image.readForUpload.mockResolvedValue({ name: 'next.txt', size: 3, mime: 'text/plain', bytes: new Uint8Array([1, 2, 3]).buffer });
+    const upload = document.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(upload, 'files', { value: [new File(['abc'], 'next.txt', { type: 'text/plain' })], configurable: true });
+    await act(async () => upload.dispatchEvent(new Event('change', { bubbles: true }))); await settle();
+    await act(async () => { finish(); }); await settle();
+    expect(api.createThread).not.toHaveBeenCalled();
+    expect(sync.flush).toHaveBeenCalledTimes(1);
+    const saved = (await db.notes.toArray())[0];
+    expect(saved.text).toBe('first snapshot'); expect(saved.attachments).toBeUndefined();
+    expect(document.querySelector('textarea')!.value).toBe('next input while IndexedDB commits');
+    expect(document.body.textContent).toContain('next.txt');
+  });
+  it.each(['current', 'development'] as const)('keeps a new identical draft typed while the previous intent is enqueued in %s', async (ui) => {
+    let finish!: () => void;
+    const add = db.notes.add.bind(db.notes);
+    vi.spyOn(db.notes, 'add').mockImplementation((record) => new Dexie.Promise<string>((resolve, reject) => {
+      finish = () => { void add(record).then(resolve, reject); };
+    }));
+    await mount('t1', ui); await input('intentional repeat');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement);
+    await input(''); await input('intentional repeat');
+    await act(async () => { finish(); }); await settle();
+    expect(document.querySelector('textarea')!.value).toBe('intentional repeat');
+    expect((await db.notes.toArray()).map((n) => n.text)).toEqual(['intentional repeat']);
   });
   it('slow polling has at most one request in flight', async () => {
     let tick!: () => void;
@@ -111,6 +183,108 @@ describe('full chat controller race and draft regressions', () => {
     expect(saved?.conversationId).toBe(notes[0].clientThreadId);
     expect(saved?.text).toBe('');
     expect(document.querySelectorAll('[data-chat-message]')).toHaveLength(2);
+  });
+  it.each(['current', 'development'] as const)('keeps the next draft and pending attachment when an offline thread is assigned in %s', async (ui) => {
+    await mount(null, ui); await input('first offline message');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    const first = (await db.notes.toArray())[0];
+    await input('next message still being composed');
+    let finishFile!: (value: unknown) => void;
+    image.readForUpload.mockImplementation(() => new Promise((resolve) => { finishFile = resolve; }));
+    const upload = document.querySelector('input[type="file"]') as HTMLInputElement;
+    Object.defineProperty(upload, 'files', { value: [new File(['abc'], 'next.txt', { type: 'text/plain' })], configurable: true });
+    await act(async () => upload.dispatchEvent(new Event('change', { bubbles: true })));
+    await act(async () => { await db.notes.update(first.id, { threadId: 'assigned-thread', sync: 'synced', remoteId: 'inbox-first' }); });
+    await settle(); await settle();
+    expect(api.fetchThread).toHaveBeenCalledWith('assigned-thread');
+    await act(async () => { finishFile({ name: 'next.txt', size: 3, mime: 'text/plain', bytes: new Uint8Array([1, 2, 3]).buffer }); });
+    await settle();
+    // 相同服务器回执再次出现，不应再迁移或重载输入栏。
+    await act(async () => { await db.notes.update(first.id, { remoteId: 'inbox-first' }); }); await settle();
+    expect(document.querySelector('textarea')!.value).toBe('next message still being composed');
+    expect(document.body.textContent).toContain('next.txt');
+    const saved = await chatDraftDatabase.drafts.get(chatDraftKey('tester', 'assigned-thread'));
+    expect(saved?.text).toBe('next message still being composed');
+    expect([...new Uint8Array(saved!.attachments[0].bytes!)]).toEqual([1, 2, 3]);
+    expect(saved?.conversationId).toBe(first.clientThreadId);
+    expect(await chatDraftDatabase.drafts.get(chatDraftKey('tester', null))).toBeUndefined();
+    await act(async () => root.unmount()); root = createRoot(container);
+    await mount('assigned-thread', ui);
+    expect(document.querySelector('textarea')!.value).toBe('next message still being composed');
+    expect(document.body.textContent).toContain('next.txt');
+  });
+  it.each(['current', 'development'] as const)('keeps editing and dictation state on identity adoption, then opens a genuinely new draft in %s', async (ui) => {
+    const clientThreadId = crypto.randomUUID();
+    await saveChatDraft({ key: chatDraftKey('tester', null), userCode: 'tester', conversationId: clientThreadId,
+      text: 'unfinished correction', attachments: [], editing: { id: 'original-message', text: 'original' }, transcript: 'dictation text' });
+    await db.notes.add({ ...note('first'), clientThreadId });
+    api.syncThreads.mockResolvedValue([{ id: 'assigned-thread', title: 'Assigned conversation', last_message_at: new Date().toISOString(), messages: 1 }]);
+    await mount(null, ui);
+    await act(async () => { await db.notes.update('first', { threadId: 'assigned-thread', sync: 'synced', remoteId: 'inbox-first' }); });
+    await settle(); await settle();
+    expect(document.querySelector('textarea')!.value).toBe('unfinished correction');
+    expect(document.body.textContent).toContain('正在改这一句');
+    const saved = await chatDraftDatabase.drafts.get(chatDraftKey('tester', 'assigned-thread'));
+    expect(saved?.editing?.id).toBe('original-message'); expect(saved?.transcript).toBe('dictation text');
+    await click(button('历史')); await click(button('新对话')); await settle();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 190)); });
+    expect(document.querySelector('textarea')!.value).toBe('');
+    expect(document.body.textContent).not.toContain('正在改这一句');
+    await input('a genuinely new draft');
+    await click(button('历史')); await click([...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Assigned conversation'))!); await settle();
+    expect(document.querySelector('textarea')!.value).toBe('unfinished correction');
+    expect(document.body.textContent).toContain('正在改这一句');
+    expect((await chatDraftDatabase.drafts.get(chatDraftKey('tester', null)))?.text).toBe('a genuinely new draft');
+  });
+  it.each(['current', 'development'] as const)('ignores a late identity adoption after switching accounts in %s', async (ui) => {
+    let finish!: () => void;
+    const move = chatDrafts.moveChatDraft;
+    vi.spyOn(chatDrafts, 'moveChatDraft').mockImplementation((request) => {
+      const pending = move(request);
+      return new Promise<void>((resolve, reject) => { finish = () => { void pending.then(resolve, reject); }; });
+    });
+    await mount(null, ui); await input('account A message');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    const first = (await db.notes.toArray())[0];
+    await input('account A next draft');
+    await act(async () => { await db.notes.update(first.id, { threadId: 'account-A-thread', sync: 'synced' }); }); await settle();
+    const finishA = finish;
+    const otherConversation = crypto.randomUUID();
+    await saveChatDraft({ key: chatDraftKey('other', null), userCode: 'other', conversationId: otherConversation,
+      text: 'account B draft', attachments: [], editing: null });
+    await db.notes.add({ ...note('other-note'), recordedBy: 'other', clientThreadId: otherConversation });
+    identity.userCode = 'other';
+    await act(async () => root.render(<ChatSheet initialThreadId={null} ui={ui} onClose={() => {}} />)); await settle();
+    await act(async () => { await db.notes.update('other-note', { threadId: 'account-B-thread', sync: 'synced' }); }); await settle();
+    await act(async () => { finishA(); }); await settle();
+    expect(api.fetchThread).not.toHaveBeenCalledWith('account-A-thread');
+    expect(document.querySelector('textarea')!.value).toBe('account B draft');
+    expect(document.body.textContent).not.toContain('account A message');
+    expect((await chatDraftDatabase.drafts.get(chatDraftKey('tester', 'account-A-thread')))?.text).toBe('account A next draft');
+    await act(async () => { finish(); }); await settle();
+    expect(api.fetchThread).toHaveBeenCalledWith('account-B-thread');
+    expect(document.querySelector('textarea')!.value).toBe('account B draft');
+  });
+  it.each(['current', 'development'] as const)('keeps late identity adoption with its old conversation after switching history in %s', async (ui) => {
+    let finish!: () => void;
+    const move = chatDrafts.moveChatDraft;
+    vi.spyOn(chatDrafts, 'moveChatDraft').mockImplementation((request) => {
+      const pending = move(request);
+      return new Promise<void>((resolve, reject) => { finish = () => { void pending.then(resolve, reject); }; });
+    });
+    api.syncThreads.mockResolvedValue([{ id: 't2', title: 'Second thread', last_message_at: new Date().toISOString(), messages: 0 }]);
+    await mount(null, ui); await input('first');
+    await click(document.querySelector('[aria-label="发送"]') as HTMLElement); await settle();
+    const first = (await db.notes.toArray())[0];
+    await input('first conversation draft');
+    await act(async () => { await db.notes.update(first.id, { threadId: 'assigned-first-thread', sync: 'synced' }); }); await settle();
+    await click(button('历史')); await click([...document.querySelectorAll('button')].find((b) => b.textContent?.includes('Second thread'))!); await settle();
+    await input('second conversation draft');
+    await act(async () => { finish(); }); await settle();
+    expect(api.fetchThread).toHaveBeenCalledWith('t2');
+    expect(api.fetchThread).not.toHaveBeenCalledWith('assigned-first-thread');
+    expect(document.querySelector('textarea')!.value).toBe('second conversation draft');
+    expect((await chatDraftDatabase.drafts.get(chatDraftKey('tester', 'assigned-first-thread')))?.text).toBe('first conversation draft');
   });
   it('attachment reading cannot cross threads, and prepared bytes stay with their draft', async () => {
     let finish!: (file: unknown) => void;

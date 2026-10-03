@@ -22,6 +22,7 @@
 // ── 数据库。agent 只写 `staging`，`inbox` 由触发器挡住（§4.2 第 2 条）──────
 export { sql } from '../../src/db.ts';
 export { companySuggestion } from '../../../../shared/company-suggestion.mjs';
+export type { CompanySuggestion } from '../../../../shared/company-suggestion.mjs';
 export { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS } from '../../../../shared/company-types.mjs';
 
 // ── 配置。模型名、上限、开关都在这里 ─────────────────────────────────
@@ -60,9 +61,10 @@ export { pendingProjectProposals, reserveProjectCode } from '../../src/projectCo
 
 // Verified candidates and durable questions stay behind the gateway boundary.
 export { readCompanyTargetCandidates, readProjectTargetCandidates, candidateText, registerCandidates } from '../../src/targetCandidates.ts';
-export { createAgentQuestion, bindExplicitCandidate, resolveExplicitCandidate, persistAgentQuestions } from '../../src/questions.ts';
+export { createAgentQuestion, bindExplicitCandidate, resolveExplicitCandidate, persistAgentQuestions, persistAgentReply, reconcilePendingQuestionItems, loadLegacyDispositionSource } from '../../src/questions.ts';
 export type { AgentQuestionInput } from '../../src/questions.ts';
 export { proposeRecords, listThreadItems, hasProposalItems } from '../../src/proposal-items.ts';
+export { sanitizeItemFields, IGNORED_ITEM_FIELDS, ProposalItemError } from '../../src/proposal-model.ts';
 
 /**
  * ── 🔴 唯一的三个「会写进 CRM」的函数 ─────────────────────────────────

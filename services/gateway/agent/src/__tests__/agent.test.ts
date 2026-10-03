@@ -21,6 +21,7 @@ import {
 } from '../enums.ts';
 import { sanitizeFieldEdits } from '../../../src/confirm.ts';
 import { runAgent, type ModelBinding, type Skill } from '../runtime.ts';
+import { env } from '../host.ts';
 import { FORBIDDEN_TOOL_NAMES, TOOL_NAMES, buildSkills, newContext } from '../tools/index.ts';
 import { committedBase, hasRecordProposal } from '../inherit.ts';
 
@@ -59,12 +60,27 @@ it('新客户建议本身不能充当业务记录，原文兜底仍须生效', (
 // ── ② 工具清单快照 ─────────────────────────────────────────────────
 describe('工具清单 —— 能力边界的唯一执行机制', () => {
   it('注册的工具恰好是清单上那些，一个不多一个不少', () => {
-    const names = buildSkills(ctx()).map((s) => s.name).sort();
-    assert.deepEqual(names, [...TOOL_NAMES].sort());
+    const previous = Object.getOwnPropertyDescriptor(env, 'agentMultiItems')!;
+    let names: string[];
+    try {
+      Object.defineProperty(env, 'agentMultiItems', { ...previous, value: true });
+      names = buildSkills(ctx()).map((s) => s.name).sort();
+      assert.deepEqual(names, [...TOOL_NAMES].sort());
+    } finally { Object.defineProperty(env, 'agentMultiItems', previous); }
     // 数量写死。加工具本身没问题，但**必须是有意识地加** ——
     // 改这个数字的那一刻，就得回头看一眼 docs/agent.md 里的圈层图还对不对。
     // 2026-08-05：14 → 15，加了 read_skill（D72，Ring 1 只读手册）。docs/agent.md 已同步。
     assert.equal(names.length, 17, `工具数量变了（${names.length}）—— 顺手更新 docs/agent.md`);
+  });
+
+  it('多事项开关停用时仅注册原15个工具，既有单项业务能力保留', () => {
+    const previous = Object.getOwnPropertyDescriptor(env, 'agentMultiItems')!;
+    try {
+      Object.defineProperty(env, 'agentMultiItems', { ...previous, value: false });
+      const names=buildSkills(ctx()).map((s)=>s.name).sort();
+      assert.deepEqual(names,[...TOOL_NAMES].filter((name)=>!['propose_records','get_proposal_items'].includes(name)).sort());
+      assert.equal(names.length,15);
+    } finally { Object.defineProperty(env, 'agentMultiItems', previous); }
   });
 
   it('🔴 D147：钉钉来源不注册 propose_intel_field —— 它跑的过程中就写 Twenty，60 秒撤回取消不掉', async () => {

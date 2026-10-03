@@ -21,18 +21,40 @@
 
 ## 边界：三圈
 
-**15 个工具**（`src/tools/index.ts` 的 `TOOL_NAMES` 是唯一真相源）：
+**最多 17 个工具**（`src/tools/index.ts` 的 `TOOL_NAMES` 是唯一真相源）。
+多事项默认停用；`AGENT_MULTI_ITEMS=1` 才向 PWA 注册 `propose_records` 和 `get_proposal_items`，
+停用时仍保留原 15 个工具。钉钉不注册这两个工具及 `propose_intel_field`。
 
 | 圈 | 工具 | 在哪 |
 |---|---|---|
-| **Ring 1** 只读（8） | `read_skill` · `search_companies` · `get_thread` · `get_company_gaps` · `get_company_records` · `get_projects` · `read_attachment` · `list_enums` | `src/tools/read.ts` · `project.ts` |
-| **Ring 2** 写提案（7） | `propose_fields` · `ask_user` · `flag_new_company` · `propose_intel_field` · `propose_project` · `propose_work_items` · `propose_document` | `src/tools/write.ts` · `project.ts` · `intel-field.ts` |
+| **Ring 1** 只读（9） | `read_skill` · `search_companies` · `get_thread` · `get_proposal_items` · `get_company_gaps` · `get_company_records` · `get_projects` · `read_attachment` · `list_enums` | `src/tools/read.ts` · `project.ts` · `records.ts` |
+| **Ring 2** 写提案（8） | `propose_fields` · `propose_records` · `ask_user` · `flag_new_company` · `propose_intel_field` · `propose_project` · `propose_work_items` · `propose_document` | `src/tools/write.ts` · `project.ts` · `records.ts` · `intel-field.ts` |
 | **Ring 3** 压根没注册（5） | `create_company` · `write_twenty` · `confirm_to_crm` · `update_inbox` · `delete_anything` | 不存在 —— 这就是它的实现方式 |
 
 🔴 **能力边界靠「工具清单里有没有」，不靠 prompt 里写「请不要」。**
 prompt 会被长文本冲掉、会被模型换代改变行为；而没有的函数，它调不出来。
 `src/tools/index.ts` 底部的 `TOOL_NAMES` / `FORBIDDEN_TOOL_NAMES` 有测试逐字对账 ——
 谁手滑加了个 `create_company`，`src/__tests__/agent.test.ts` 立刻红。
+
+多事项字段保留 `chain` 和 `corrections`；非法业务字段返回具体事项 key 和 field，
+关系 UUID 及内部字段会剥除并在工具文本明确报告。新客户提示必须按同名
+`suggested_company` 或明确 `itemKey` 带入，不能复制最后一家建议；
+`sourceCompanyName` 是消息来源，不能据此绑定客户。
+
+`ask_user` 与 `propose_records` 两种调用顺序都校验问题归属。先问再产生多项而没有
+itemId 的问题会被撤出本轮待发送问题，提案保留，模型可按工具返回的稳定身份重问。
+最终已知 `QuestionError` 用数据库 savepoint 保留正常回复和事项；数据库故障仍然报错。
+
+旧单条提案与新原话的关系不明确时，先请用户选择准确旧候选的 `continue` 或
+独立新事项 `create`。该问题的来源暂不可确认，网关重启也不会自动重跑等人任务。
+只有持久化答案解除边界：`create` 保留旧卡并清旧客户/业务字段；`continue`
+只消费精确旧卡，其他待确认事项保留。模型自报选择不能解除这道边界。
+
+本轮的兼容边界：选 `continue` 后只走 `propose_fields` 的补丁合并，原字段与原详情保留，
+不能再转多项清掉旧基底；选 `create` 才可生成新的多事项。把旧单条统一迁到事项状态机
+仍是后续工作。答案续跑按已验证的问题来源重新提供原话及附件，每项 `evidenceRefs`
+保存原始问题来源和本次答案。CRM 的 `sourceNote` / 附件出处目前仍按本次答案 inbox
+生成；真实原始来源可从网关证据及问题台账追溯，CRM 出处展示增强留待后续。
 
 ## 文件地图
 
@@ -51,7 +73,7 @@ agent/
     ├── loop.ts               后台队列：预处理 → 跑 agent → 落 staging。重试预算与 session 续跑也在这
     ├── prompt.ts          ⭐ 系统提示词。~90 行核心 + playbook 索引（**渐进披露**，D72）
     ├── skills.ts             playbook 加载器：给索引、按名取全文
-    ├── runtime.ts            Pi 框架的唯一接触面。换框架只动这一个文件，15 个工具一行不动
+    ├── runtime.ts            Pi 框架的唯一接触面。换框架只动这一个文件，工具清单一行不动
     ├── enums.ts           🔴 枚举的唯一真相源（agent / 网关 /enums / 核对卡 四处共用）
     │                         中英两份标签 + `labelsFor()`（D80）
     ├── transcribe.ts         语音 → 文字。**跑在 agent 之外**（D46b）
@@ -147,7 +169,7 @@ Node 只往**祖先目录**找 `node_modules`，而依赖装在 `services/gatewa
 
 ## 延伸阅读
 
-- `docs/agent.md` —— 15 个工具三圈、为什么转写在它之外、造字段的四条护栏、出问题怎么查
+- `docs/agent.md` —— 最多 17 个工具三圈、为什么转写在它之外、造字段的四条护栏、出问题怎么查
 - `REDESIGN.md` —— D71 / D72 / D73 的方案全文与实施状态
 - `docs/gateway-contract.md` —— 提案落到 `staging` 之后，前后端怎么约定
 - 内部设计日志（未公开） §3 —— D31 / D46b / D47 / D48 / D59 / D71–D73 的理由和代价
