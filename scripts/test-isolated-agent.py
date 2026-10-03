@@ -29,6 +29,66 @@ class StartupFailed(RuntimeError):
     pass
 
 
+POSTGRES_READY_PROBE = r"""
+import postgres from 'postgres';
+const sql = postgres(process.env.APP_DATABASE_URL, { max: 1, connect_timeout: 1, idle_timeout: 1 });
+const deadline = Date.now() + Number(process.argv[1]);
+let ready = false;
+let lastError = 'not connected';
+let progressAt = 0;
+try {
+  while (Date.now() < deadline) {
+    try {
+      const [row] = await sql.unsafe('select current_database() as database, 1 as ready');
+      if (row?.database !== 'boothnote' || row.ready !== 1) throw new Error('Unexpected fixture database');
+      ready = true;
+      console.log('Published fixture PostgreSQL ready: boothnote');
+      break;
+    } catch (error) {
+      lastError = error.code ?? error.message;
+      if (Date.now() >= progressAt) {
+        console.error('Waiting for published fixture PostgreSQL: ' + lastError);
+        progressAt = Date.now() + 3000;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
+  if (!ready) {
+    console.error('Published fixture PostgreSQL not ready: ' + lastError);
+    process.exitCode = 1;
+  }
+} finally {
+  await sql.end({ timeout: 1 });
+}
+"""
+
+
+def wait_for_postgres(root, env, log, seconds=45):
+    """Probe the authenticated published TCP/database used by migrations.
+
+    postgres's image initially runs a temporary Unix-socket-only server.
+    Container-local pg_isready can succeed before boothnote or the final TCP server
+    exists. Never retry migrations to compensate for an incomplete startup.
+    """
+    try:
+        result = subprocess.run(["node", "--input-type=module", "--eval", POSTGRES_READY_PROBE, str(seconds * 1000)],
+                                cwd=root / "services/gateway", env=env, stdout=log, stderr=subprocess.STDOUT,
+                                timeout=seconds)
+    except subprocess.TimeoutExpired as error:
+        raise StartupFailed(f"Published fixture PostgreSQL did not become ready within {seconds}s; inspect {log.name}") from error
+    if result.returncode:
+        raise StartupFailed(f"Published fixture PostgreSQL is not ready; inspect {log.name}")
+
+
+def ensure_postgres_image(docker, env):
+    """Give a cold image download its own bound, before creating any container."""
+    cached = subprocess.run(docker + ["image", "inspect", "postgres:16"], env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    if cached.returncode:
+        print(json.dumps({"pullingFixtureImage": "postgres:16", "timeoutSeconds": 120}), flush=True)
+        subprocess.run(docker + ["pull", "postgres:16"], env=env, check=True, timeout=120)
+
+
 def free_port():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
@@ -59,6 +119,12 @@ def default_suite(root, state_file):
     for sig in [signal.SIGINT, signal.SIGTERM]:
         previous_handlers[sig] = signal.signal(sig, interrupted)
     try:
+        print(json.dumps({"readinessRegression": True, "realTwenty": False}), flush=True)
+        active = subprocess.Popen([sys.executable, str(root / "scripts/test-isolated-agent-readiness.py"), "--repo", str(root)],
+                                  start_new_session=True)
+        code = active.wait()
+        if code:
+            return code
         for name in files:
             command = [sys.executable, str(Path(__file__).resolve()), "--repo", str(root)]
             if state_file:
@@ -102,7 +168,7 @@ def main():
         return default_suite(root, args.state_file)
     run_dir = Path(tempfile.mkdtemp(prefix="boothnote-fixture-stack-", dir="/tmp"))
     state_file = Path(args.state_file) if args.state_file else run_dir / "state.json"
-    cid = "boothnote-fixture-" + str(os.getpid())
+    cid = "boothnote-fixture-" + str(os.getpid()) + "-" + run_dir.name[-8:]
     pg_port, gw_port, twenty_port = free_port(), free_port(), free_port()
     env = os.environ.copy()
     env.update({
@@ -136,7 +202,13 @@ def main():
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait(timeout=5)
         if created_container:
-            subprocess.run(docker + ["rm", "-f", cid], env=docker_env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                with (run_dir / "postgres.log").open("w") as postgres_log:
+                    subprocess.run(docker + ["logs", cid], env=docker_env, stdout=postgres_log,
+                                   stderr=subprocess.STDOUT, timeout=15)
+            finally:
+                subprocess.run(docker + ["rm", "-fv", cid], env=docker_env, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=15)
         for handle in handles:
             handle.close()
         shutil.rmtree(run_dir / "audio", ignore_errors=True)
@@ -147,14 +219,23 @@ def main():
     signal.signal(signal.SIGTERM, interrupted)
     try:
         subprocess.run(docker + ["info", "--format", "{{.ServerVersion}}"], env=docker_env, check=True, stdout=subprocess.DEVNULL)
+        ensure_postgres_image(docker, docker_env)
+        # The unique name belongs to this run even if interruption happens after
+        # Docker creates it but before the client command returns.
+        created_container = True
         subprocess.run(docker + ["run", "-d", "--name", cid, "-e", "POSTGRES_PASSWORD=itest", "-e", "POSTGRES_DB=boothnote",
                                "-p", f"127.0.0.1:{pg_port}:5432", "postgres:16"], env=docker_env, check=True, stdout=subprocess.DEVNULL)
-        created_container = True
-        def pg_ready():
-            result = subprocess.run(docker + ["exec", cid, "pg_isready", "-q"], env=docker_env)
-            if result.returncode:
-                raise RuntimeError("Postgres starting")
-        until(pg_ready)
+        readiness_log = (run_dir / "readiness.log").open("w")
+        handles.append(readiness_log)
+        print(json.dumps({"waitingFor": "published_fixture_database", "timeoutSeconds": 45,
+                          "logs": str(run_dir)}), flush=True)
+        try:
+            wait_for_postgres(root, env, readiness_log)
+        except StartupFailed:
+            readiness_log.flush()
+            print("Fixture database readiness failed; final 20 log lines:", flush=True)
+            print("\n".join((run_dir / "readiness.log").read_text(errors="replace").splitlines()[-20:]), flush=True)
+            raise
         fixture_log = (run_dir / "twenty.log").open("w")
         handles.append(fixture_log)
         fixture = subprocess.Popen([sys.executable, str(root / "services/gateway/src/__tests__/fixtures/boothnote_fake_twenty.py"), "--port", str(twenty_port)], env=env,
@@ -163,8 +244,14 @@ def main():
         until(lambda: urllib.request.urlopen(env["SERVER_URL"] + "/healthz", timeout=1).close())
         migration_log = (run_dir / "migration.log").open("w")
         handles.append(migration_log)
-        subprocess.run(["node", "src/migrate.ts"], cwd=root / "services/gateway", env=env,
-                       stdout=migration_log, stderr=subprocess.STDOUT, check=True)
+        try:
+            subprocess.run(["node", "src/migrate.ts"], cwd=root / "services/gateway", env=env,
+                           stdout=migration_log, stderr=subprocess.STDOUT, check=True)
+        except subprocess.CalledProcessError:
+            migration_log.flush()
+            print("Fixture migration failed; final 40 log lines:", flush=True)
+            print("\n".join((run_dir / "migration.log").read_text(errors="replace").splitlines()[-40:]), flush=True)
+            raise
         gateway_log = (run_dir / "gateway.log").open("w")
         handles.append(gateway_log)
         gateway = subprocess.Popen(["node", "src/index.ts"], cwd=root / "services/gateway", env=env,
